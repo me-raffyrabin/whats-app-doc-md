@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>PromptForge — Text to AI Prompt (.md)</title>
+<!-- iOS "run as native app" support -->
+<meta name="theme-color" content="#0b0910">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PromptForge">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0b0910; --surface:#14101a; --surface-2:#1a1522; --border:#272033;
+    --text:#ece7f2; --muted:#8d8499; --faint:#5d5570;
+    --accent:#e3b04b; --accent-soft:rgba(227,176,75,.14); --accent-line:rgba(227,176,75,.45);
+    --radius:14px; --mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  [data-model="gpt"]{
+    --accent:#5ec8a8; --accent-soft:rgba(94,200,168,.13); --accent-line:rgba(94,200,168,.45);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--text);
+    font:400 15px/1.55 'Inter',system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    display:flex;flex-direction:column;min-height:100dvh;
+  }
+  /* ---------- header ---------- */
+  header{
+    display:flex;align-items:center;justify-content:space-between;gap:16px;
+    padding:14px 20px;border-bottom:1px solid var(--border);
+    position:sticky;top:0;background:rgba(11,9,16,.85);backdrop-filter:blur(12px);z-index:10;
+  }
+  .brand{display:flex;align-items:baseline;gap:10px}
+  .brand h1{font:600 22px/1 'Cormorant Garamond',serif;letter-spacing:.02em}
+  .brand span{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+  /* model toggle */
+  .toggle{display:flex;background:var(--surface);border:1px solid var(--border);border-radius:999px;padding:3px}
+  .toggle button{
+    appearance:none;border:0;background:transparent;color:var(--muted);
+    font:500 13px 'Inter',sans-serif;padding:7px 18px;border-radius:999px;cursor:pointer;
+    transition:color .2s,background .2s;
+  }
+  .toggle button.active{background:var(--accent-soft);color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent-line)}
+  .toggle button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  /* ---------- layout ---------- */
+  main{
+    flex:1;display:grid;grid-template-columns:1fr 1fr;gap:18px;
+    width:100%;max-width:1200px;margin:0 auto;padding:18px 20px 8px;
+  }
+  @media (max-width:840px){ main{grid-template-columns:1fr} }
+  .pane{
+    background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    display:flex;flex-direction:column;overflow:hidden;min-height:340px;
+  }
+  .pane-label{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:10px 14px;border-bottom:1px solid var(--border);
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);
+  }
+  .pane-label .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:8px;vertical-align:1px}
+  /* ---------- toolbar ---------- */
+  .toolbar{
+    display:flex;flex-wrap:wrap;gap:2px;padding:8px 10px;border-bottom:1px solid var(--border);
+    background:var(--surface-2);
+  }
+  .toolbar button{
+    appearance:none;border:0;background:transparent;color:var(--muted);
+    width:34px;height:34px;border-radius:8px;cursor:pointer;
+    display:grid;place-items:center;transition:background .15s,color .15s;
+    -webkit-tap-highlight-color:transparent;touch-action:manipulation;
+  }
+  .toolbar button:hover{background:var(--accent-soft);color:var(--accent)}
+  .toolbar button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .toolbar button svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .toolbar .sep{width:1px;height:22px;background:var(--border);margin:6px 6px}
+  .toolbar-hint{width:100%;font-size:10.5px;color:var(--faint);padding:4px 4px 0}
+  .toolbar-hint b{color:var(--muted);font-weight:500}
+  /* ---------- editor / output ---------- */
+  textarea{
+    flex:1;width:100%;resize:none;border:0;outline:none;background:transparent;color:var(--text);
+    font:400 14.5px/1.6 'Inter',sans-serif;padding:14px;min-height:200px;
+  }
+  textarea::placeholder{color:var(--faint)}
+  .output{
+    flex:1;overflow:auto;padding:14px;white-space:pre-wrap;word-break:break-word;
+    font:400 12.5px/1.65 var(--mono);color:#cfc8dc;min-height:200px;
+  }
+  .output:empty::before{content:'Your converted .md prompt appears here.';color:var(--faint);font-family:'Inter',sans-serif;font-size:13.5px}
+  /* ---------- convert + share ---------- */
+  .actions{
+    width:100%;max-width:1200px;margin:0 auto;padding:6px 20px calc(18px + env(safe-area-inset-bottom));
+    display:flex;flex-direction:column;gap:12px;
+  }
+  .convert{
+    align-self:center;appearance:none;border:1px solid var(--accent-line);border-radius:999px;
+    background:var(--accent-soft);color:var(--accent);
+    font:600 14px 'Inter',sans-serif;letter-spacing:.02em;
+    padding:12px 34px;cursor:pointer;transition:transform .15s,box-shadow .2s;
+  }
+  .convert:hover{transform:translateY(-1px);box-shadow:0 6px 24px -8px var(--accent-line)}
+  .convert:active{transform:translateY(0)}
+  .convert:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  .share{
+    display:flex;flex-wrap:wrap;justify-content:center;gap:8px;
+  }
+  .share button{
+    appearance:none;border:1px solid var(--border);border-radius:10px;background:var(--surface);
+    color:var(--muted);font:500 12.5px 'Inter',sans-serif;padding:9px 14px;cursor:pointer;
+    display:flex;align-items:center;gap:7px;transition:border-color .15s,color .15s,background .15s;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .share button:hover{border-color:var(--accent-line);color:var(--accent);background:var(--accent-soft)}
+  .share button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .share svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  /* ---------- iOS Add to Home ---------- */
+  #a2hs{
+    display:none; /* revealed by JS only on iPhone / iPad, when not already installed */
+    appearance:none;border:1px solid var(--accent-line);border-radius:999px;
+    background:var(--accent-soft);color:var(--accent);cursor:pointer;
+    font:500 12px 'Inter',sans-serif;padding:7px 12px;
+    align-items:center;gap:6px;white-space:nowrap;
+    -webkit-tap-highlight-color:transparent;
+  }
+  #a2hs svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  #a2hs.on{display:flex}
+  #a2hs:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #a2hsSheet{
+    position:fixed;inset:0;z-index:60;display:none;align-items:flex-end;justify-content:center;
+    background:rgba(5,4,8,.6);backdrop-filter:blur(4px);
+  }
+  #a2hsSheet.open{display:flex}
+  .sheet{
+    width:100%;max-width:430px;background:var(--surface-2);border:1px solid var(--border);
+    border-radius:18px 18px 0 0;padding:22px 22px calc(26px + env(safe-area-inset-bottom));
+    animation:sheetUp .3s ease;
+  }
+  @keyframes sheetUp{from{transform:translateY(40px);opacity:0}to{transform:translateY(0);opacity:1}}
+  .sheet h2{font:600 20px 'Cormorant Garamond',serif;margin-bottom:4px}
+  .sheet p{font-size:13px;color:var(--muted);margin-bottom:16px}
+  .sheet ol{list-style:none;display:flex;flex-direction:column;gap:12px;margin-bottom:18px}
+  .sheet li{display:flex;align-items:center;gap:12px;font-size:13.5px}
+  .sheet li .step{
+    flex:none;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;
+    background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent-line);
+    font:600 12px 'Inter',sans-serif;
+  }
+  .sheet li svg{width:17px;height:17px;stroke:var(--accent);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+  .sheet .close{
+    width:100%;appearance:none;border:1px solid var(--border);border-radius:10px;background:var(--surface);
+    color:var(--text);font:500 14px 'Inter',sans-serif;padding:12px;cursor:pointer;
+  }
+  .sheet .close:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  /* ---------- toast ---------- */
+  #toast{
+    position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
+    background:var(--surface-2);border:1px solid var(--accent-line);color:var(--text);
+    font-size:13px;padding:10px 18px;border-radius:10px;opacity:0;pointer-events:none;
+    transition:opacity .25s,transform .25s;z-index:50;max-width:90vw;text-align:center;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  @media (prefers-reduced-motion:reduce){
+    *{transition:none!important}
+  }
+</style>
+</head>
+<body data-model="claude">
+
+<header>
+  <div class="brand">
+    <h1>PromptForge</h1>
+    <span>text → .md prompt</span>
+  </div>
+  <button id="a2hs" aria-haspopup="dialog" aria-controls="a2hsSheet">
+    <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M12 8.5v7M8.5 12h7"/></svg>
+    Add to Home
+  </button>
+  <div class="toggle" role="tablist" aria-label="Target AI model">
+    <button id="btnClaude" class="active" role="tab" aria-selected="true">Claude</button>
+    <button id="btnGPT" role="tab" aria-selected="false">GPT</button>
+  </div>
+</header>
+
+<main>
+  <!-- INPUT -->
+  <section class="pane" aria-label="Input">
+    <div class="pane-label"><span><span class="dot"></span>Your text</span><span id="charCount">0 chars</span></div>
+    <div class="toolbar" id="toolbar" aria-label="Markdown toolbar">
+      <button data-md="h1" title="Heading 1" aria-label="Heading 1"><svg viewBox="0 0 24 24"><path d="M4 5v14M12 5v14M4 12h8"/><path d="M17 12l2.5-2v9"/></svg></button>
+      <button data-md="h2" title="Heading 2" aria-label="Heading 2"><svg viewBox="0 0 24 24"><path d="M3 5v14M10 5v14M3 12h7"/><path d="M15 10c0-1.2 1-2 2.2-2s2.3.8 2.3 2c0 2.2-4.5 3.5-4.5 6h5"/></svg></button>
+      <button data-md="bold" title="Bold" aria-label="Bold"><svg viewBox="0 0 24 24"><path d="M7 5h6a3.5 3.5 0 0 1 0 7H7zM7 12h7a3.5 3.5 0 0 1 0 7H7z"/></svg></button>
+      <button data-md="italic" title="Italic" aria-label="Italic"><svg viewBox="0 0 24 24"><path d="M10 5h8M6 19h8M14 5l-4 14"/></svg></button>
+      <button data-md="strike" title="Strikethrough" aria-label="Strikethrough"><svg viewBox="0 0 24 24"><path d="M4 12h16"/><path d="M17 7c-.5-1.6-2.3-2.5-4.7-2.5-2.8 0-4.6 1.3-4.6 3.2 0 1 .5 1.7 1.5 2.3M7.5 17c.6 1.5 2.4 2.5 4.8 2.5 2.8 0 4.5-1.3 4.5-3.2 0-.7-.2-1.3-.7-1.8"/></svg></button>
+      <span class="sep"></span>
+      <button data-md="quote" title="Blockquote" aria-label="Blockquote"><svg viewBox="0 0 24 24"><path d="M5 7v10"/><path d="M10 8h9M10 12h9M10 16h9"/></svg></button>
+      <button data-md="code" title="Inline code" aria-label="Inline code"><svg viewBox="0 0 24 24"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/></svg></button>
+      <button data-md="codeblock" title="Code block" aria-label="Code block"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 10l-2.5 2.5L9 15M15 10l2.5 2.5L15 15"/></svg></button>
+      <span class="sep"></span>
+      <button data-md="ul" title="Bulleted list" aria-label="Bulleted list"><svg viewBox="0 0 24 24"><circle cx="5" cy="6" r="1.2" fill="currentColor"/><circle cx="5" cy="12" r="1.2" fill="currentColor"/><circle cx="5" cy="18" r="1.2" fill="currentColor"/><path d="M10 6h10M10 12h10M10 18h10"/></svg></button>
+      <button data-md="ol" title="Numbered list" aria-label="Numbered list"><svg viewBox="0 0 24 24"><path d="M4 5h2v4M4 9h3"/><path d="M4 14.5c0-.9.7-1.5 1.5-1.5s1.5.6 1.5 1.4c0 1.5-3 2.1-3 4.1h3.2"/><path d="M11 6h9M11 12h9M11 18h9"/></svg></button>
+      <button data-md="task" title="Task list" aria-label="Task list"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="7" rx="1.5"/><path d="M5 7.5l1.5 1.5L9 6"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 7h7M14 17h7"/></svg></button>
+      <span class="sep"></span>
+      <button data-md="link" title="Link" aria-label="Link"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 6 .4l3-3a4 4 0 0 0-5.7-5.7l-1.5 1.5"/><path d="M14 10a4 4 0 0 0-6-.4l-3 3a4 4 0 0 0 5.7 5.7l1.5-1.5"/></svg></button>
+      <button data-md="image" title="Image" aria-label="Image"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l5-5 3 3 4-4 4 4"/></svg></button>
+      <button data-md="table" title="Table" aria-label="Table"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16M15 4v16"/></svg></button>
+      <button data-md="hr" title="Divider" aria-label="Horizontal rule"><svg viewBox="0 0 24 24"><path d="M4 12h16"/><path d="M8 6h8M8 18h8" opacity=".35"/></svg></button>
+      <div class="toolbar-hint"><b>Tap</b> to format selected text · <b>Double-tap</b> to copy a sample of that format</div>
+    </div>
+    <textarea id="input" placeholder="Paste or type any text here — an idea, a rough request, notes — and PromptForge will structure it into a ready-to-use .md prompt." spellcheck="true"></textarea>
+  </section>
+
+  <!-- OUTPUT -->
+  <section class="pane" aria-label="Output">
+    <div class="pane-label"><span><span class="dot"></span><span id="outLabel">prompt.claude.md</span></span><span id="outCount"></span></div>
+    <div class="output" id="output" tabindex="0"></div>
+  </section>
+</main>
+
+<div class="actions">
+  <button class="convert" id="convert">Convert to .md prompt</button>
+  <div class="share" aria-label="Share options">
+    <button id="shCopy"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy</button>
+    <button id="shEmail"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>Email</button>
+    <button id="shSMS"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H5l-2 2V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/></svg>SMS</button>
+    <button id="shCal"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>Calendar</button>
+    <button id="shFiles"><svg viewBox="0 0 24 24"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>Save to Files</button>
+    <button id="shShare"><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.3 10.8l7.4-3.6M8.3 13.2l7.4 3.6"/></svg>More…</button>
+  </div>
+</div>
+
+<div id="a2hsSheet" role="dialog" aria-modal="true" aria-label="Add PromptForge to your Home Screen">
+  <div class="sheet">
+    <h2>Add PromptForge to your Home Screen</h2>
+    <p>Install it like a native app — full screen, no browser bars, with its own icon.</p>
+    <ol>
+      <li><span class="step">1</span>Tap the <b>&nbsp;Share&nbsp;</b> button
+        <svg viewBox="0 0 24 24"><path d="M12 3v12M8 6.5L12 3l4 3.5"/><path d="M5 11v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8"/></svg>
+        in Safari's toolbar</li>
+      <li><span class="step">2</span>Scroll down and choose
+        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M12 8.5v7M8.5 12h7"/></svg>
+        <b>&nbsp;Add to Home Screen</b></li>
+      <li><span class="step">3</span>Tap <b>&nbsp;Add&nbsp;</b> — PromptForge opens full screen from your Home Screen</li>
+    </ol>
+    <button class="close" id="a2hsClose">Got it</button>
+  </div>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const input = $('input'), output = $('output'), toast = $('toast');
+  let model = 'claude';
+
+  /* ---------------- toast ---------------- */
+  let toastTimer;
+  function say(msg){
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(()=>toast.classList.remove('show'), 2200);
+  }
+
+  /* ---------------- model toggle ---------------- */
+  function setModel(m){
+    model = m;
+    document.body.dataset.model = m;
+    $('btnClaude').classList.toggle('active', m==='claude');
+    $('btnGPT').classList.toggle('active', m==='gpt');
+    $('btnClaude').setAttribute('aria-selected', m==='claude');
+    $('btnGPT').setAttribute('aria-selected', m==='gpt');
+    $('outLabel').textContent = m==='claude' ? 'prompt.claude.md' : 'prompt.gpt.md';
+    if(output.textContent.trim()) convert(); // live re-convert on switch
+  }
+  $('btnClaude').onclick = ()=>setModel('claude');
+  $('btnGPT').onclick = ()=>setModel('gpt');
+
+  /* ---------------- markdown toolbar ---------------- */
+  const SAMPLES = {
+    h1:       '# Heading 1\nThe largest heading — use once per document as the title.',
+    h2:       '## Heading 2\nA section heading — great for organizing prompt sections.',
+    bold:     'This word is **bold** — wrap text in double asterisks to add emphasis.',
+    italic:   'This word is *italic* — wrap text in single asterisks for a softer emphasis.',
+    strike:   'This is ~~struck through~~ — wrap text in double tildes to show removal.',
+    quote:    '> This is a blockquote.\n> Start each line with “>” to quote or call out text.',
+    code:     'Use `inline code` — wrap text in backticks for commands, keys, or values.',
+    codeblock:'```js\nconst greet = (name) => `Hello, ${name}!`;\n```\nTriple backticks create a code block (add a language for highlighting).',
+    ul:       '- First item\n- Second item\n- Third item\nStart lines with “-” for a bulleted list.',
+    ol:       '1. First step\n2. Second step\n3. Third step\nNumber the lines for an ordered list.',
+    task:     '- [ ] An open task\n- [x] A completed task\nUse “- [ ]” and “- [x]” for checklists.',
+    link:     '[Link text](https://example.com) — text in brackets, URL in parentheses.',
+    image:    '![Alt text](https://example.com/image.png) — like a link, with a leading “!”.',
+    table:    '| Column A | Column B |\n| -------- | -------- |\n| Cell 1   | Cell 2   |\nPipes and dashes build a table.',
+    hr:       'Text above the divider.\n\n---\n\nText below — three dashes on their own line create a horizontal rule.'
+  };
+
+  function applyFormat(kind){
+    const s = input.selectionStart, e = input.selectionEnd;
+    const val = input.value;
+    const sel = val.slice(s, e);
+    let before = val.slice(0, s), after = val.slice(e), insert = '', cursorPad = 0;
+
+    const wrap = (l, r, ph) => { insert = l + (sel || ph) + r; cursorPad = sel ? 0 : -(r.length + ph.length); };
+    const linePrefix = (p, ph) => {
+      const text = sel || ph;
+      insert = text.split('\n').map(t => p + t).join('\n');
+    };
+    const numbered = ph => {
+      const text = sel || ph;
+      insert = text.split('\n').map((t,i)=>`${i+1}. ${t}`).join('\n');
+    };
+    // ensure block elements sit on their own line
+    const blockPad = () => { if(before && !before.endsWith('\n')) before += '\n'; if(after && !after.startsWith('\n')) after = '\n' + after; };
+
+    switch(kind){
+      case 'h1': blockPad(); linePrefix('# ',  'Heading'); break;
+      case 'h2': blockPad(); linePrefix('## ', 'Heading'); break;
+      case 'bold':   wrap('**','**','bold text'); break;
+      case 'italic': wrap('*','*','italic text'); break;
+      case 'strike': wrap('~~','~~','struck text'); break;
+      case 'quote':  blockPad(); linePrefix('> ', 'Quoted text'); break;
+      case 'code':   wrap('`','`','code'); break;
+      case 'codeblock': blockPad(); insert = '```\n' + (sel || 'code here') + '\n```'; break;
+      case 'ul':   blockPad(); linePrefix('- ', 'List item'); break;
+      case 'ol':   blockPad(); numbered('List item'); break;
+      case 'task': blockPad(); linePrefix('- [ ] ', 'Task item'); break;
+      case 'link':  insert = '[' + (sel || 'link text') + '](https://)'; break;
+      case 'image': insert = '![' + (sel || 'alt text') + '](https://)'; break;
+      case 'table': blockPad(); insert = '| Column A | Column B |\n| -------- | -------- |\n|          |          |'; break;
+      case 'hr':    blockPad(); insert = '---'; break;
+    }
+    input.value = before + insert + after;
+    const pos = (before + insert).length + cursorPad;
+    input.focus();
+    input.setSelectionRange(pos, pos);
+    updateCount();
+  }
+
+  async function copySample(kind, label){
+    try{
+      await navigator.clipboard.writeText(SAMPLES[kind]);
+      say(`Sample “${label}” copied — paste it in the editor to see how it formats`);
+    }catch{
+      say('Clipboard unavailable — long-press to paste manually');
+    }
+  }
+
+  // tap = format, double-tap = copy sample (works for mouse dblclick and touch)
+  const TAP_WINDOW = 300;
+  document.querySelectorAll('#toolbar button').forEach(btn=>{
+    const kind = btn.dataset.md, label = btn.title;
+    let pending = null, lastTap = 0;
+    btn.addEventListener('click', ()=>{
+      const now = Date.now();
+      if(now - lastTap < TAP_WINDOW){           // double tap
+        clearTimeout(pending); pending = null;
+        lastTap = 0;
+        copySample(kind, label);
+      }else{                                     // possible single tap
+        lastTap = now;
+        pending = setTimeout(()=>{ applyFormat(kind); pending = null; }, TAP_WINDOW);
+      }
+    });
+  });
+
+  /* ---------------- conversion ---------------- */
+  function firstLine(t){
+    const l = t.trim().split('\n')[0].replace(/[#>*`\-]/g,'').trim();
+    return l.length > 64 ? l.slice(0,61) + '…' : (l || 'Untitled request');
+  }
+
+  function buildClaude(text){
+    const title = firstLine(text);
+    return `# Prompt — ${title}
+
+## Role
+You are Claude, an expert assistant. Be precise, honest, and thorough. If anything is ambiguous, state your assumptions before answering.
+
+<context>
+${text.trim()}
+</context>
+
+<instructions>
+1. Read the context carefully and identify the core request.
+2. Think through the problem step by step before writing your answer.
+3. Address every part of the request — do not skip sub-questions.
+4. If information is missing, say what you assumed and why.
+</instructions>
+
+<output_format>
+- Respond in clean, well-structured Markdown.
+- Use headings for major sections and lists only where they aid scanning.
+- Keep the answer as concise as accuracy allows.
+</output_format>`;
+  }
+
+  function buildGPT(text){
+    const title = firstLine(text);
+    return `# Prompt — ${title}
+
+## System
+You are an expert assistant. Be precise, honest, and thorough. If anything is ambiguous, state your assumptions before answering.
+
+## User Request
+${text.trim()}
+
+## Instructions
+1. Identify the core request in the text above.
+2. Reason step by step before producing the final answer.
+3. Address every part of the request — do not skip sub-questions.
+4. If information is missing, state your assumptions explicitly.
+
+## Output Format
+- Respond in clean, well-structured Markdown.
+- Use headings for major sections and lists only where they aid scanning.
+- Keep the answer as concise as accuracy allows.`;
+  }
+
+  function convert(){
+    const text = input.value;
+    if(!text.trim()){ say('Add some text first'); input.focus(); return; }
+    output.textContent = model==='claude' ? buildClaude(text) : buildGPT(text);
+    $('outCount').textContent = output.textContent.length + ' chars';
+  }
+  $('convert').onclick = convert;
+
+  function updateCount(){ $('charCount').textContent = input.value.length + ' chars'; }
+  input.addEventListener('input', updateCount);
+
+  /* ---------------- sharing ---------------- */
+  function getMD(){
+    const t = output.textContent.trim();
+    if(!t){ say('Convert your text first'); return null; }
+    return t;
+  }
+  const fileName = () => model==='claude' ? 'prompt.claude.md' : 'prompt.gpt.md';
+
+  $('shCopy').onclick = async ()=>{
+    const t = getMD(); if(!t) return;
+    try{ await navigator.clipboard.writeText(t); say('.md prompt copied to clipboard'); }
+    catch{ say('Copy failed — select the output text manually'); }
+  };
+
+  $('shEmail').onclick = ()=>{
+    const t = getMD(); if(!t) return;
+    location.href = 'mailto:?subject=' + encodeURIComponent('AI Prompt (.md) — ' + fileName())
+                  + '&body=' + encodeURIComponent(t);
+  };
+
+  $('shSMS').onclick = ()=>{
+    const t = getMD(); if(!t) return;
+    // "sms:?&body=" is the most cross-platform form (iOS + Android)
+    location.href = 'sms:?&body=' + encodeURIComponent(t);
+  };
+
+  $('shCal').onclick = ()=>{
+    const t = getMD(); if(!t) return;
+    const dt = d => d.toISOString().replace(/[-:]/g,'').split('.')[0] + 'Z';
+    const now = new Date(), end = new Date(now.getTime() + 30*60000);
+    const esc = s => s.replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\n/g,'\\n');
+    const ics = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//PromptForge//EN','BEGIN:VEVENT',
+      'UID:' + Date.now() + '@promptforge','DTSTAMP:' + dt(now),'DTSTART:' + dt(now),'DTEND:' + dt(end),
+      'SUMMARY:AI Prompt — ' + esc(firstLine(input.value)),
+      'DESCRIPTION:' + esc(t),'END:VEVENT','END:VCALENDAR'].join('\r\n');
+    downloadBlob(new Blob([ics], {type:'text/calendar'}), 'prompt.ics');
+    say('Calendar event created — open it to add to your calendar');
+  };
+
+  $('shFiles').onclick = async ()=>{
+    const t = getMD(); if(!t) return;
+    const file = new File([t], fileName(), {type:'text/markdown'});
+    // Prefer the native share sheet on mobile (exposes "Save to Files" on iOS / Android)
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      try{ await navigator.share({files:[file], title:fileName()}); return; }catch(e){ if(e.name==='AbortError') return; }
+    }
+    downloadBlob(new Blob([t], {type:'text/markdown'}), fileName());
+    say('Downloading ' + fileName());
+  };
+
+  $('shShare').onclick = async ()=>{
+    const t = getMD(); if(!t) return;
+    if(navigator.share){
+      try{ await navigator.share({title:'AI Prompt (.md)', text:t}); }catch(e){}
+    }else{
+      say('Native sharing is not available in this browser');
+    }
+  };
+
+  /* ---------------- iOS Add to Home ---------------- */
+  (function(){
+    // iPhone / iPod / classic iPad UA, plus modern iPadOS (reports as Mac but is touch)
+    const isIOS = (/iPad|iPhone|iPod/.test(navigator.userAgent)
+                  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
+                  && !window.MSStream;
+    // Hide if already running as an installed app
+    const installed = window.navigator.standalone === true
+                    || window.matchMedia('(display-mode: standalone)').matches;
+    if(!isIOS || installed) return;
+
+    const btn = $('a2hs'), sheet = $('a2hsSheet');
+    btn.classList.add('on');
+    btn.onclick = ()=> sheet.classList.add('open');
+    $('a2hsClose').onclick = ()=> sheet.classList.remove('open');
+    sheet.addEventListener('click', e=>{ if(e.target === sheet) sheet.classList.remove('open'); });
+  })();
+
+  function downloadBlob(blob, name){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  }
+})();
+</script>
+</body>
+</html>
