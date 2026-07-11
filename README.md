@@ -1,14 +1,14 @@
-# ⚒️ PromptForge
+# ⚒️ WhatsUpDocMD
 
 **Turn any raw text into a structured, ready-to-use AI prompt in Markdown — tuned for Claude or GPT.**
 
-PromptForge is a single-file, zero-dependency web app. Paste an idea, a rough request, or messy notes, and it forges them into a clean `.md` prompt with a role, context, instructions, and output-format scaffold — following each model's prompting conventions. No build step, no backend, no tracking. One `index.html`.
+WhatsUpDocMD is a single-file, zero-dependency web app. Paste an idea, a rough request, or messy notes, and it forges them into a clean `.md` prompt with a role, context, instructions, and output-format scaffold — following each model's prompting conventions. No build step, no backend, no tracking. One `index.html`.
 
 ---
 
 ## 🔗 Live Demo
 
-> **[https://YOUR-USERNAME.github.io/promptforge/](https://YOUR-USERNAME.github.io/promptforge/)**
+> **[https://me-raffyrabin.github.io/whats-app-doc-md/](https://me-raffyrabin.github.io/whats-app-doc-md/)**
 
 Try it in 10 seconds:
 
@@ -52,7 +52,7 @@ Fifteen tools with clean, intuitive icons:
 ### 📱 Runs like a native app on iOS
 - On iPhone and iPad, an **Add to Home** button appears in the header (hidden on all other devices, and hidden once installed)
 - Tapping it opens a step-by-step sheet guiding you through Safari's **Share → Add to Home Screen** flow
-- Installed, PromptForge launches full screen — no browser chrome, black-translucent status bar, custom gold-on-void app icon (`apple-touch-icon.png`)
+- Installed, WhatsUpDocMD launches full screen — no browser chrome, black-translucent status bar, custom gold-on-void app icon (`apple-touch-icon.png`)
 
 ### 🎨 Design
 - Void-and-gold dark theme with a Cormorant Garamond / Inter type pairing
@@ -63,7 +63,7 @@ Fifteen tools with clean, intuitive icons:
 
 ## 🚀 Deploy your own
 
-PromptForge is static — any host works. GitHub Pages is the fastest:
+WhatsUpDocMD is static — any host works. GitHub Pages is the fastest:
 
 1. **Fork or clone** this repository
 2. Keep both files at the repo root:
@@ -72,7 +72,7 @@ PromptForge is static — any host works. GitHub Pages is the fastest:
    apple-touch-icon.png
    ```
 3. Go to **Settings → Pages → Source**, select **Deploy from a branch**, choose `main` / root
-4. Your app is live at `https://YOUR-USERNAME.github.io/REPO-NAME/`
+4. Your app is live at `https://me-raffyrabin.github.io/whats-app-doc-md/`
 5. Update the **Live Demo** link at the top of this README
 
 No build tools, package managers, or servers required.
@@ -92,7 +92,7 @@ No build tools, package managers, or servers required.
 ## 📁 Project structure
 
 ```
-promptforge/
+whats-app-doc-md
 ├── index.html            # The entire app
 ├── apple-touch-icon.png  # 180×180 iOS home screen icon
 └── README.md
