@@ -122,5 +122,9 @@ whats-app-doc-md
 ---
 
 ## 📄 License
+ 
+Released under the [MIT License - use it, fork it, forge with it.](LICENSE). © 2026 realgothamknights.
 
-MIT — use it, fork it, forge with it.
+---
+
+<p align="center">Made with ✨ and a love for forging things.</p>
