@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>WhatsUpDocMD — Text to AI Prompt (.md)</title>
+<title>WhatsUpDocMD — Text & Documents to Agentic AI Prompts</title>
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -84,12 +84,45 @@
     background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
     display:flex;flex-direction:column;overflow:hidden;min-height:340px;
   }
+  @media (min-width:841px){
+    main{min-height:0}
+    .pane{height:clamp(430px,calc(100dvh - 205px),760px)}
+  }
+  @media (max-width:840px){
+    .pane{height:min(68dvh,640px);min-height:390px}
+  }
   .pane-label{
     display:flex;align-items:center;justify-content:space-between;
     padding:10px 14px;border-bottom:1px solid var(--border);
     font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);
   }
   .pane-label .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:8px;vertical-align:1px}
+  .input-meta{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0}
+  .file-meta{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);text-transform:none;letter-spacing:0}
+  .upload-btn{
+    appearance:none;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);
+    color:var(--muted);font:500 11px 'Inter',sans-serif;letter-spacing:0;text-transform:none;
+    padding:6px 9px;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap;
+    transition:border-color .15s,color .15s,background .15s;
+  }
+  .upload-btn:hover{border-color:var(--accent-line);color:var(--accent);background:var(--accent-soft)}
+  .upload-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .upload-btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .smart-status{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:8px 12px;border-bottom:1px solid var(--border);background:rgba(11,9,16,.38);
+    font-size:11px;color:var(--faint);
+  }
+  .smart-status strong{color:var(--accent);font-weight:600;white-space:nowrap}
+  .smart-status span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}
+  .pane.dragover{border-color:var(--accent-line);box-shadow:inset 0 0 0 1px var(--accent-line),0 0 28px -18px var(--accent)}
+  .pane.dragover textarea{background:var(--accent-soft)}
+  @media (max-width:600px){
+    .input-meta{width:100%;justify-content:space-between}
+    .file-meta{max-width:105px}
+    .smart-status{align-items:flex-start}
+    .smart-status span:last-child{white-space:normal;text-align:left}
+  }
   /* ---------- toolbar ---------- */
   .toolbar{
     display:flex;flex-wrap:wrap;gap:2px;padding:8px 10px;border-bottom:1px solid var(--border);
@@ -275,8 +308,19 @@
 
 <main>
   <!-- INPUT -->
-  <section class="pane" aria-label="Input">
-    <div class="pane-label"><span><span class="dot"></span>Your text</span><span id="charCount">0 chars</span></div>
+  <section class="pane" id="inputPane" aria-label="Input">
+    <div class="pane-label">
+      <span><span class="dot"></span>Your text or document</span>
+      <div class="input-meta">
+        <span class="file-meta" id="fileMeta" title="Paste, type, drop, or upload a supported document">Paste or upload</span>
+        <button class="upload-btn" id="uploadBtn" type="button" aria-controls="fileInput">
+          <svg viewBox="0 0 24 24"><path d="M12 16V4M8 8l4-4 4 4"/><path d="M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg>
+          Upload
+        </button>
+        <input id="fileInput" type="file" hidden accept=".txt,.rtf,.doc,.md,.pdf,text/plain,text/rtf,text/markdown,application/rtf,application/msword,application/pdf">
+        <span id="charCount">0 chars</span>
+      </div>
+    </div>
     <div class="toolbar" id="toolbar" aria-label="Markdown toolbar">
       <button data-md="h1" title="Heading 1" aria-label="Heading 1"><svg viewBox="0 0 24 24"><path d="M4 5v14M12 5v14M4 12h8"/><path d="M17 12l2.5-2v9"/></svg></button>
       <button data-md="h2" title="Heading 2" aria-label="Heading 2"><svg viewBox="0 0 24 24"><path d="M3 5v14M10 5v14M3 12h7"/><path d="M15 10c0-1.2 1-2 2.2-2s2.3.8 2.3 2c0 2.2-4.5 3.5-4.5 6h5"/></svg></button>
@@ -301,7 +345,11 @@
       <button id="tbClear" class="act" title="Clear all" aria-label="Clear all text"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6M14 11v6"/></svg></button>
       <div class="toolbar-hint"><b>Tap</b> to format selected text · <b>Double-tap</b> to copy a sample of that format · <b>Undo</b> reverts · <b>Clear</b> empties (undoable)</div>
     </div>
-    <textarea id="input" placeholder="Paste or type any text here — an idea, a rough request, notes — and WhatsUpDocMD will structure it into a ready-to-use .md prompt." spellcheck="true"></textarea>
+    <div class="smart-status" aria-live="polite">
+      <strong>Smart context engine</strong>
+      <span id="smartSummary">Waiting for text or a document</span>
+    </div>
+    <textarea id="input" placeholder="Paste, type, drop, or upload TXT, RTF, DOC, MD, or PDF. WhatsUpDocMD will infer the intended goals and structure the result into a ready-to-use prompt or agentic loop." spellcheck="true"></textarea>
   </section>
 
   <!-- OUTPUT -->
@@ -321,7 +369,7 @@
 <div class="actions">
   <div class="convertRow">
     <button class="convert" id="convert">Convert to .md prompt</button>
-    <button class="convert" id="convertLoop">Convert to .md Loop</button>
+    <button class="convert" id="convertLoop">Convert to Agentic .md Loop</button>
   </div>
   <div class="share" aria-label="Share options">
     <button id="shCopy"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy</button>
@@ -470,139 +518,817 @@
     });
   });
 
+  /* ---------------- document upload + text extraction ---------------- */
+  const SUPPORTED_EXTENSIONS = ['txt','rtf','doc','md','pdf'];
+  const MAX_FILE_BYTES = 20 * 1024 * 1024;
+
+  function fileExtension(name){
+    const parts = String(name || '').toLowerCase().split('.');
+    return parts.length > 1 ? parts.pop() : '';
+  }
+
+  function clearConvertedOutput(){
+    rawMD = '';
+    output.textContent = '';
+    output.classList.remove('preview');
+    $('outCount').textContent = '';
+    updateOutLabel();
+  }
+
+  function decodeRtfHex(hex){
+    try{
+      return new TextDecoder('windows-1252').decode(new Uint8Array([parseInt(hex,16)]));
+    }catch{
+      return String.fromCharCode(parseInt(hex,16));
+    }
+  }
+
+  function rtfToText(rtf){
+    let text = String(rtf || '');
+    text = text
+      .replace(/\\([\\{}])/g, '$1')
+      .replace(/\\'([0-9a-fA-F]{2})/g, (_,hex)=>decodeRtfHex(hex))
+      .replace(/\\u(-?\d+)\??/g, (_,n)=>{
+        let code = Number(n);
+        if(code < 0) code += 65536;
+        return String.fromCharCode(code);
+      })
+      .replace(/\\par[d]?\b/g, '\n')
+      .replace(/\\line\b/g, '\n')
+      .replace(/\\tab\b/g, '\t')
+      .replace(/\\(?:fonttbl|colortbl|stylesheet|info|pict|object|header|footer|footnote|annotation)[\s\S]*?}/gi, '')
+      .replace(/\\[a-zA-Z]+-?\d* ?/g, '')
+      .replace(/[{}]/g, '')
+      .replace(/\r/g, '')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    return text;
+  }
+
+  function scoreReadableText(text){
+    const clean = String(text || '').replace(/\s+/g,' ').trim();
+    if(!clean) return 0;
+    const words = clean.match(/[A-Za-z]{2,}/g) || [];
+    const spaces = (clean.match(/ /g) || []).length;
+    const controls = (clean.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g) || []).length;
+    return words.length * 3 + spaces - controls * 20;
+  }
+
+  function cleanDocCandidate(text){
+    const boilerplate = /^(?:Times New Roman|Arial|Calibri|Courier New|Symbol|Normal\.dot|Microsoft Office Word|DocumentSummaryInformation|SummaryInformation|CompObj|WordDocument|Data|ObjectPool|Root Entry)$/i;
+    const chunks = String(text || '')
+      .replace(/\u0000/g,' ')
+      .replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F]/g,'\n')
+      .split(/\n+/)
+      .map(s=>s.replace(/\s+/g,' ').trim())
+      .filter(s=>s.length >= 4 && !boilerplate.test(s))
+      .filter(s=>{
+        const letters = (s.match(/[A-Za-z]/g) || []).length;
+        const weird = (s.match(/[^\x20-\x7E\u00A0-\u024F]/g) || []).length;
+        return letters >= 3 && weird < Math.max(3, s.length * .18);
+      });
+    const out = [];
+    const seen = new Set();
+    for(const chunk of chunks){
+      const key = chunk.toLowerCase();
+      if(seen.has(key)) continue;
+      seen.add(key);
+      out.push(chunk);
+    }
+    return out.join('\n');
+  }
+
+  async function extractLegacyDoc(file){
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    const utf16 = cleanDocCandidate(new TextDecoder('utf-16le', {fatal:false}).decode(bytes));
+    const latin = cleanDocCandidate(new TextDecoder('windows-1252', {fatal:false}).decode(bytes));
+    const best = scoreReadableText(utf16) >= scoreReadableText(latin) ? utf16 : latin;
+    if(best.trim().length < 20){
+      throw new Error('The DOC file did not contain readable text. Try saving it as RTF, TXT, MD, or PDF and upload it again.');
+    }
+    return best;
+  }
+
+  let pdfJsPromise = null;
+  function loadPdfJs(){
+    if(window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+    if(pdfJsPromise) return pdfJsPromise;
+    pdfJsPromise = new Promise((resolve,reject)=>{
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      script.onload = ()=>{
+        if(!window.pdfjsLib) return reject(new Error('PDF reader failed to initialize.'));
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        resolve(window.pdfjsLib);
+      };
+      script.onerror = ()=>reject(new Error('PDF extraction requires an internet connection the first time PDF support is used.'));
+      document.head.appendChild(script);
+    });
+    return pdfJsPromise;
+  }
+
+  async function extractPdf(file){
+    const pdfjs = await loadPdfJs();
+    const data = new Uint8Array(await file.arrayBuffer());
+    const pdf = await pdfjs.getDocument({data}).promise;
+    const pages = [];
+    for(let pageNumber=1; pageNumber<=pdf.numPages; pageNumber++){
+      $('smartSummary').textContent = `Reading PDF page ${pageNumber} of ${pdf.numPages}…`;
+      const page = await pdf.getPage(pageNumber);
+      const content = await page.getTextContent();
+      const text = content.items.map(item=>item.str).join(' ')
+        .replace(/\s+([,.;:!?])/g,'$1')
+        .replace(/\s{2,}/g,' ')
+        .trim();
+      if(text) pages.push(text);
+    }
+    const combined = pages.join('\n\n');
+    if(!combined.trim()) throw new Error('No selectable text was found in this PDF. Scanned image PDFs need OCR before upload.');
+    return combined;
+  }
+
+  async function extractFileText(file){
+    const ext = fileExtension(file.name);
+    if(!SUPPORTED_EXTENSIONS.includes(ext)){
+      throw new Error('Unsupported file type. Choose TXT, RTF, DOC, MD, or PDF.');
+    }
+    if(file.size > MAX_FILE_BYTES){
+      throw new Error('That file is larger than 20 MB. Please upload a smaller document.');
+    }
+    if(ext === 'txt' || ext === 'md') return await file.text();
+    if(ext === 'rtf') return rtfToText(await file.text());
+    if(ext === 'doc') return await extractLegacyDoc(file);
+    if(ext === 'pdf') return await extractPdf(file);
+    return '';
+  }
+
+  async function loadDocument(file){
+    if(!file) return;
+    const uploadBtn = $('uploadBtn');
+    uploadBtn.disabled = true;
+    $('smartSummary').textContent = `Reading ${file.name}…`;
+    try{
+      const text = await extractFileText(file);
+      if(!text.trim()) throw new Error('The document did not contain readable text.');
+      snapshot();
+      input.value = text.trim();
+      $('fileMeta').textContent = file.name;
+      $('fileMeta').title = `${file.name} · ${(file.size/1024).toFixed(1)} KB`;
+      updateCount();
+      clearConvertedOutput();
+      input.focus();
+      say(`${file.name} loaded`);
+    }catch(err){
+      $('smartSummary').textContent = 'Document could not be processed';
+      say(err && err.message ? err.message : 'Could not read that document');
+    }finally{
+      uploadBtn.disabled = false;
+      $('fileInput').value = '';
+    }
+  }
+
+  $('uploadBtn').onclick = ()=>$('fileInput').click();
+  $('fileInput').addEventListener('change', e=>loadDocument(e.target.files && e.target.files[0]));
+
+  const inputPane = $('inputPane');
+  ['dragenter','dragover'].forEach(type=>inputPane.addEventListener(type,e=>{
+    e.preventDefault();
+    if(e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    inputPane.classList.add('dragover');
+  }));
+  ['dragleave','drop'].forEach(type=>inputPane.addEventListener(type,e=>{
+    e.preventDefault();
+    inputPane.classList.remove('dragover');
+  }));
+  inputPane.addEventListener('drop', e=>{
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if(file) loadDocument(file);
+  });
+  input.addEventListener('paste', ()=>setTimeout(()=>{
+    $('fileMeta').textContent = 'Pasted text';
+    $('fileMeta').title = 'Text pasted into the editor';
+    updateSmartSummary();
+  },0));
+
+  /* ---------------- smart text processing engine ---------------- */
+  const ACTION_VERBS = [
+    'add','analyze','audit','build','change','check','clean','compare','convert','create','debug',
+    'design','develop','document','edit','enhance','evaluate','fix','generate','implement','improve',
+    'integrate','investigate','migrate','modify','optimize','organize','plan','produce','refactor',
+    'remove','repair','replace','research','review','rewrite','run','summarize','test','translate',
+    'update','validate','verify','write'
+  ];
+
+  const TASK_TYPE_RULES = {
+    software: ['code','codebase','repository','repo','github','html','css','javascript','typescript','react','node','npm','api','route','component','function','schema','database','test','lint','build','bug','file'],
+    research: ['research','sources','evidence','compare','analysis','market','study','data-backed','citations','findings'],
+    design: ['design','screen','recording','ui','ux','layout','visual','image','video','animation','style','prototype'],
+    writing: ['write','rewrite','readme','document','report','email','post','copy','story','article','markdown'],
+    data: ['dataset','spreadsheet','csv','rows','columns','metrics','forecast','chart','dashboard','clean data'],
+    planning: ['plan','roadmap','strategy','milestone','timeline','priorities','next steps','schedule']
+  };
+
+  function cleanTextLine(line){
+    return String(line || '')
+      .replace(/^\s*(?:[-*+•]|\d+[.)])\s*/, '')
+      .replace(/\s+/g,' ')
+      .trim();
+  }
+
+  function uniqueLimited(items, limit=6){
+    const out = [], seen = new Set();
+    for(const item of items){
+      const clean = cleanTextLine(item);
+      if(clean.length < 3) continue;
+      const key = clean.toLowerCase();
+      if(seen.has(key)) continue;
+      seen.add(key);
+      out.push(clean);
+      if(out.length >= limit) break;
+    }
+    return out;
+  }
+
+  function meaningfulLines(text){
+    return String(text || '').split(/\r?\n/)
+      .map(cleanTextLine)
+      .filter(line=>line.length >= 3 && !/^#{1,6}\s*$/.test(line));
+  }
+
+  function sentencesFrom(text){
+    return String(text || '')
+      .replace(/\r/g,'\n')
+      .split(/(?:\n+|(?<=[.!?])\s+)/)
+      .map(cleanTextLine)
+      .filter(s=>s.length >= 8);
+  }
+
+  function startsWithAction(line){
+    const first = cleanTextLine(line).toLowerCase().split(/\s+/)[0];
+    return ACTION_VERBS.includes(first);
+  }
+
+  function detectTaskType(text){
+    const lower = text.toLowerCase();
+    const scores = Object.entries(TASK_TYPE_RULES).map(([type,words])=>[
+      type,
+      words.reduce((score,word)=>score + (lower.includes(word) ? 1 : 0), 0)
+    ]).sort((a,b)=>b[1]-a[1]);
+    return scores[0][1] ? scores[0][0] : 'general';
+  }
+
+  function roleForTask(type){
+    return {
+      software:'senior autonomous software engineer',
+      research:'evidence-driven research analyst',
+      design:'senior product and visual implementation specialist',
+      writing:'expert editor and structured-content specialist',
+      data:'senior data analyst and implementation specialist',
+      planning:'strategic planning and execution specialist',
+      general:'expert autonomous problem-solving agent'
+    }[type] || 'expert autonomous problem-solving agent';
+  }
+
+  function validationForTask(type){
+    return {
+      software:'Run the project’s discovered formatter, type checker, linter, tests, build, and relevant runtime or visual verification.',
+      research:'Verify claims against authoritative sources, check dates and contradictions, and confirm every conclusion is supported.',
+      design:'Compare the result against the visual source of truth at the target viewport and verify interaction, spacing, hierarchy, and accessibility.',
+      writing:'Review completeness, clarity, factual consistency, formatting, audience fit, and every requested deliverable.',
+      data:'Validate source integrity, formulas or transformations, totals, edge cases, and reproducibility of the output.',
+      planning:'Check dependencies, sequencing, ownership, feasibility, risks, milestones, and whether the plan reaches the stated outcome.',
+      general:'Validate the result directly against every stated requirement and success condition.'
+    }[type];
+  }
+
+  function extractFileRefs(text){
+    const refs = [];
+    const filePattern = /(?:^|[\s"'`(])([A-Za-z0-9_./\\-]+\.(?:html?|css|jsx?|tsx?|json|md|txt|rtf|docx?|pdf|py|java|kt|swift|xml|ya?ml|toml|ini|sql|csv|xlsx?|pptx?|zip|glb|png|jpe?g|svg|mp4|mov))(?:$|[\s"'`),])/gi;
+    let match;
+    while((match = filePattern.exec(text))) refs.push(match[1]);
+    const urls = text.match(/https?:\/\/[^\s)>\]]+/g) || [];
+    return uniqueLimited([...refs,...urls],8);
+  }
+
+  function analyzeIntent(text){
+    const raw = String(text || '').trim();
+    const lines = meaningfulLines(raw);
+    const sentences = sentencesFrom(raw);
+    const all = uniqueLimited([...lines,...sentences],40);
+    const lower = raw.toLowerCase();
+    const taskType = detectTaskType(raw);
+
+    const goalPatterns = /\b(?:goal|objective|purpose|need|want|would like|please|task|outcome|intend|responsible for)\b/i;
+    const requirementPatterns = /\b(?:must|should|need to|required|requirement|make sure|ensure|include|support|accept|allow|keep|preserve)\b/i;
+    const constraintPatterns = /\b(?:do not|don't|must not|avoid|only|without|keep existing|preserve|no backend|no dependency|cannot|should not)\b/i;
+    const referencePatterns = /\b(?:attached|reference|source of truth|based on|according to|use the|screen recording|existing|provided)\b/i;
+    const validationPatterns = /\b(?:test|verify|validate|check|lint|typecheck|build|run|pass|working|works|compare|preview)\b/i;
+    const deliverablePatterns = /\b(?:create|build|produce|generate|update|modify|add|implement|write|deliver|export|convert|fix|remove|replace)\b/i;
+    const successPatterns = /\b(?:done when|complete when|completion criteria|success|make sure|ensure|all pass|works correctly|fully implemented)\b/i;
+
+    const goals = uniqueLimited([
+      ...all.filter(x=>goalPatterns.test(x)),
+      ...all.filter(startsWithAction)
+    ],6);
+
+    const requirements = uniqueLimited(all.filter(x=>requirementPatterns.test(x)),10);
+    const constraints = uniqueLimited(all.filter(x=>constraintPatterns.test(x)),8);
+    const references = uniqueLimited([
+      ...all.filter(x=>referencePatterns.test(x)),
+      ...extractFileRefs(raw)
+    ],8);
+    const validation = uniqueLimited(all.filter(x=>validationPatterns.test(x)),8);
+    const deliverables = uniqueLimited(all.filter(x=>deliverablePatterns.test(x)),8);
+    const successCriteria = uniqueLimited(all.filter(x=>successPatterns.test(x)),8);
+
+    const fallback = all[0] || 'Complete the supplied request';
+    const primaryGoal = goals[0] || deliverables[0] || fallback;
+    const titleSource = primaryGoal.replace(/^(?:please\s+|i\s+(?:need|want|would like)\s+(?:you\s+)?to\s+)/i,'');
+    const title = titleSource.length > 72 ? titleSource.slice(0,69) + '…' : titleSource;
+
+    const explicitNumbers = (raw.match(/^\s*\d+[.)]\s+.+$/gm) || []).length;
+    const confidence = requirements.length + goals.length + deliverables.length + explicitNumbers >= 5 ? 'high'
+      : requirements.length + goals.length + deliverables.length >= 2 ? 'medium' : 'low';
+
+    return {
+      raw,
+      title: title || 'Untitled request',
+      taskType,
+      role: roleForTask(taskType),
+      primaryGoal,
+      goals: goals.length ? goals : [primaryGoal],
+      deliverables: deliverables.length ? deliverables : [primaryGoal],
+      requirements,
+      constraints,
+      references,
+      validation,
+      successCriteria,
+      validationStrategy: validationForTask(taskType),
+      confidence,
+      hasTechnicalSignals: TASK_TYPE_RULES.software.some(word=>lower.includes(word))
+    };
+  }
+
+  function mdList(items, fallback='Not explicitly stated; infer conservatively from the source request.'){
+    if(!items || !items.length) return `- ${fallback}`;
+    return items.map(item=>`- ${item}`).join('\n');
+  }
+
+  function xmlItems(items, fallback='Not explicitly stated; infer conservatively from the source request.'){
+    const values = items && items.length ? items : [fallback];
+    return values.map(item=>`  <item>${item.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</item>`).join('\n');
+  }
+
+  function updateSmartSummary(){
+    const text = input.value.trim();
+    if(!text){
+      $('smartSummary').textContent = 'Waiting for text or a document';
+      return;
+    }
+    const a = analyzeIntent(text);
+    const pieces = [
+      `${a.taskType} task`,
+      `${a.goals.length} goal${a.goals.length===1?'':'s'}`,
+      `${a.requirements.length} requirement${a.requirements.length===1?'':'s'}`,
+      `${a.constraints.length} constraint${a.constraints.length===1?'':'s'}`
+    ];
+    $('smartSummary').textContent = `Understood as ${pieces.join(' · ')}`;
+  }
+
   /* ---------------- conversion ---------------- */
   function firstLine(t){
-    const l = t.trim().split('\n')[0].replace(/[#>*`\-]/g,'').trim();
-    return l.length > 64 ? l.slice(0,61) + '…' : (l || 'Untitled request');
+    const analysis = analyzeIntent(t);
+    return analysis.title || 'Untitled request';
   }
 
   function buildClaude(text){
-    const title = firstLine(text);
-    return `# Prompt — ${title}
+    const a = analyzeIntent(text);
+    return `# Prompt — ${a.title}
 
 ## Role
-You are Claude, an expert assistant. Be precise, honest, and thorough. If anything is ambiguous, state your assumptions before answering.
+You are Claude acting as an ${a.role}. Be precise, honest, and thorough. Use the interpreted intent below to preserve the user’s actual goal rather than merely echoing their wording.
+
+<smart_context>
+  <task_type>${a.taskType}</task_type>
+  <confidence>${a.confidence}</confidence>
+  <primary_goal>${a.primaryGoal.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</primary_goal>
+  <goals>
+${xmlItems(a.goals)}
+  </goals>
+  <deliverables>
+${xmlItems(a.deliverables)}
+  </deliverables>
+  <requirements>
+${xmlItems(a.requirements)}
+  </requirements>
+  <constraints>
+${xmlItems(a.constraints)}
+  </constraints>
+  <references>
+${xmlItems(a.references)}
+  </references>
+  <validation_signals>
+${xmlItems(a.validation)}
+  </validation_signals>
+</smart_context>
 
 <context>
 ${text.trim()}
 </context>
 
 <instructions>
-1. Read the context carefully and identify the core request.
-2. Think through the problem step by step before writing your answer.
-3. Address every part of the request — do not skip sub-questions.
-4. If information is missing, say what you assumed and why.
+1. Read both the source context and the smart-context interpretation.
+2. Preserve the primary goal, required deliverables, constraints, and references.
+3. Resolve minor ambiguity using the most conservative interpretation consistent with the request.
+4. Address every requirement and explicitly surface any assumption that materially affects the result.
+5. Validate the result using this strategy: ${a.validationStrategy}
 </instructions>
 
 <output_format>
 - Respond in clean, well-structured Markdown.
-- Use headings for major sections and lists only where they aid scanning.
-- Keep the answer as concise as accuracy allows.
+- Use headings for major sections and lists only where they improve scanning.
+- Deliver the requested artifact or answer directly.
+- Keep the response as concise as accuracy and completeness allow.
 </output_format>`;
   }
 
   function buildGPT(text){
-    const title = firstLine(text);
-    return `# Prompt — ${title}
+    const a = analyzeIntent(text);
+    return `# Prompt — ${a.title}
 
 ## System
-You are an expert assistant. Be precise, honest, and thorough. If anything is ambiguous, state your assumptions before answering.
+You are an ${a.role}. Be precise, honest, and thorough. Use the interpreted intent below to preserve the user’s actual goal rather than merely repeating their wording.
+
+## Smart Context Analysis
+
+**Task type:** ${a.taskType}  
+**Interpretation confidence:** ${a.confidence}  
+**Primary goal:** ${a.primaryGoal}
+
+### Goals
+${mdList(a.goals)}
+
+### Deliverables
+${mdList(a.deliverables)}
+
+### Requirements
+${mdList(a.requirements)}
+
+### Constraints
+${mdList(a.constraints)}
+
+### References and Sources of Truth
+${mdList(a.references)}
+
+### Validation Signals
+${mdList(a.validation)}
 
 ## User Request
 ${text.trim()}
 
 ## Instructions
-1. Identify the core request in the text above.
-2. Reason step by step before producing the final answer.
-3. Address every part of the request — do not skip sub-questions.
-4. If information is missing, state your assumptions explicitly.
+1. Read the original request and the smart-context analysis together.
+2. Preserve the primary goal, deliverables, constraints, and references.
+3. Resolve minor ambiguity conservatively and state any material assumptions.
+4. Address every requirement without silently dropping sub-tasks.
+5. Validate the result using this strategy: ${a.validationStrategy}
 
 ## Output Format
 - Respond in clean, well-structured Markdown.
-- Use headings for major sections and lists only where they aid scanning.
-- Keep the answer as concise as accuracy allows.`;
+- Deliver the requested artifact or answer directly.
+- Use headings and lists where they improve clarity.
+- Keep the response as concise as accuracy and completeness allow.`;
   }
 
-  /* ---------------- agentic loop conversion (LOOP-Template) ---------------- */
+  function taskSpecificInspection(a){
+    const shared = [
+      'Read the entire source request and any supplied references before acting.',
+      'Search for existing work that already satisfies part of the request before creating something new.'
+    ];
+    const byType = {
+      software: [
+        'Inspect the repository structure, package and build configuration, routes, components, schemas, assets, tests, and project conventions.',
+        'Grep for the named files, UI text, features, functions, and requirements extracted from the request.',
+        'Determine the correct formatter, type-check, lint, test, build, and run commands from the project itself.'
+      ],
+      research: [
+        'Identify the claims that require verification, the preferred source types, date sensitivity, and competing interpretations.',
+        'Search primary and authoritative sources first, then compare evidence before drawing conclusions.'
+      ],
+      design: [
+        'Inspect the visual reference for screen states, hierarchy, typography, spacing, color, motion, interaction, and responsive behavior.',
+        'Locate existing assets and design-system components before generating replacements.'
+      ],
+      writing: [
+        'Inspect the intended audience, voice, required sections, source material, factual claims, and formatting destination.',
+        'Preserve the user’s meaning while improving structure, completeness, and usability.'
+      ],
+      data: [
+        'Inspect source files, schemas, field types, missing values, formulas, assumptions, and expected outputs.',
+        'Establish reproducible checks for totals, transformations, and edge cases.'
+      ],
+      planning: [
+        'Inspect goals, dependencies, constraints, stakeholders, milestones, risks, and existing commitments.',
+        'Distinguish required sequencing from optional optimization.'
+      ],
+      general: [
+        'Inspect all available inputs, dependencies, references, and existing work relevant to the outcome.'
+      ]
+    };
+    return mdList([...shared,...(byType[a.taskType] || byType.general)]);
+  }
+
+  function workUnitsFor(a){
+    const items = uniqueLimited([...a.deliverables,...a.goals],6);
+    return items.map((item,index)=>`### Work Unit ${index+1}
+- **Goal:** ${item}
+- **Inspect:** Find the existing files, references, dependencies, or prior work relevant to this goal.
+- **Act:** Make the smallest complete change that advances this goal.
+- **Validate:** ${a.validationStrategy}`).join('\n\n');
+  }
+
+  function tailoredCompletionCriteria(a){
+    const criteria = uniqueLimited([
+      ...a.deliverables.map(x=>`Deliverable completed: ${x}`),
+      ...a.requirements.map(x=>`Requirement satisfied: ${x}`),
+      ...a.successCriteria.map(x=>`Success condition verified: ${x}`)
+    ],16);
+    const generic = [
+      'No new errors or regressions were introduced.',
+      a.validationStrategy,
+      'The final result was compared against the original request and all supplied sources of truth.',
+      'Known differences, limitations, and pre-existing failures are documented honestly.'
+    ];
+    return mdList([...criteria,...generic]);
+  }
+
+  function exampleTrace(a){
+    const target = a.deliverables[0] || a.primaryGoal;
+    const check = a.validation[0] || a.validationStrategy;
+    return `1. Read the request → identify the primary outcome: ${target}
+2. Inspect the environment → locate the relevant files, existing implementation, references, and validation commands
+3. Plan the smallest complete work unit
+4. Call a tool → search, read, edit, generate, or run the relevant command
+5. Observe the result → read all output, errors, warnings, and visible behavior
+6. Compare the result against the request and smart task interpretation
+7. Decide the next action → fix the largest remaining discrepancy
+8. Run validation → ${check}
+9. If validation fails, diagnose the root cause, correct it, and rerun
+10. Repeat until every completion criterion is verified
+11. Report the evidence-backed final status`;
+  }
+
+  /* ---------------- agentic loop conversion ---------------- */
   function buildLoop(text, m){
-    const title = firstLine(text);
+    const a = analyzeIntent(text);
     const agentName = m==='claude' ? 'Claude Code' : 'Codex';
     const task = m==='claude'
-      ? `<task>\n${text.trim()}\n</task>`
-      : `## Task\n${text.trim()}`;
-    return `# Agentic Loop — ${title}
+      ? `<source_request>\n${text.trim()}\n</source_request>`
+      : `## Source Request\n${text.trim()}`;
+
+    return `# Agentic Loop — ${a.title}
 
 ## Role
-You are the ${agentName} agent responsible for completing the task below.
-Your goal is to fully satisfy the request as described. Use the task text as the source of truth.
+You are ${agentName}, acting as an ${a.role}, responsible for completing the source request below.
 
-Operate autonomously through an agentic loop:
+Your goal is not to answer once. Your goal is to complete the work, inspect the evidence produced by each action, correct failures, and continue until the task is genuinely done or a defined stopping condition is reached.
+
+## Agentic Loop Definition
+
+An **agentic loop** is the repeated operating cycle the tool performs around a prompt:
+
+**READ THE PROMPT → PLAN → CALL A TOOL → OBSERVE THE RESULT → DECIDE THE NEXT ACTION → REPEAT**
+
+For coding work, tool calls may include grepping the codebase, reading files, editing files, running tests, launching the application, inspecting logs, and comparing the implementation against a reference. The loop is what allows ${agentName} to diagnose and fix its own failing tests or incomplete implementation without requiring the user to re-prompt.
+
+Use the expanded control loop:
+
 **UNDERSTAND → INSPECT → PLAN → ACT → RUN → OBSERVE → COMPARE → CORRECT → REPEAT**
 
-Do not stop after the first attempt. Continue until the completion criteria are satisfied or a defined stopping condition is reached.
+Do not stop after the first attempt. Do not treat a successful edit as proof of completion. Continue until the completion criteria are verified.
+
+## Smart Task Interpretation
+
+**Task type:** ${a.taskType}  
+**Interpretation confidence:** ${a.confidence}  
+**Primary goal:** ${a.primaryGoal}
+
+### Intended Goals
+${mdList(a.goals)}
+
+### Expected Deliverables
+${mdList(a.deliverables)}
+
+### Requirements
+${mdList(a.requirements)}
+
+### Constraints
+${mdList(a.constraints)}
+
+### References and Sources of Truth
+${mdList(a.references)}
+
+### Validation Signals Found in the Request
+${mdList(a.validation)}
 
 ${task}
 
 ---
 
-## 1. Understand the Task
-Before changing anything:
-1. Read the complete request.
-2. Identify the desired outcome and explicit requirements.
-3. Identify implied requirements that can reasonably be inferred.
-4. Identify available references and sources of truth.
-5. Identify constraints, risks, and dependencies.
-6. Separate required work from optional improvements.
+## 1. Read and Understand
 
-Create an internal task map: primary objective, required deliverables, functional requirements, visual/behavioral requirements, technical constraints, validation requirements, completion criteria. Do not begin implementation until the task is sufficiently understood.
+Before calling an implementation tool:
 
-## 2. Inspect the Existing Environment
-Before making changes: list directories and files; search for relevant names, routes, components, functions, schemas, or text; read configuration files; identify frameworks, dependencies, and reusable components; locate existing tests; determine build, lint, test, and run commands; identify project conventions. Do not duplicate existing functionality when a suitable implementation already exists.
+1. Read the complete source request.
+2. Reconcile it with the smart task interpretation.
+3. Identify the desired final state, not merely the requested actions.
+4. Identify every explicit requirement, inferred dependency, constraint, reference, deliverable, and success condition.
+5. Preserve the original request as the authoritative source when the interpretation and source wording differ.
+6. Create an internal task ledger with:
+   - Remaining work
+   - Current work unit
+   - Evidence observed
+   - Failures and root causes
+   - Decisions made
+   - Completion criteria still unverified
+   - Next best action
+
+## 2. Inspect Before Changing Anything
+
+${taskSpecificInspection(a)}
+
+Do not duplicate an existing component, document, workflow, test, or utility when it can be safely reused or extended.
 
 ## 3. Establish a Baseline
-Install dependencies if needed, then run the existing build, type checking, linting, and tests. Launch the application or relevant environment. Record any pre-existing errors and keep them separate from issues introduced by the new work.
 
-## 4. Create an Implementation Plan
-Break the task into small, verifiable work units, each with a Goal, Files likely involved, and Validation method. Implement one meaningful work unit at a time. Prioritize: correct behavior → required functionality → structure/layout → error handling → tests → visual accuracy → performance → minor polish. Do not polish details while major requirements remain incomplete.
+Before substantial changes:
 
-## 5. Execute the Agentic Loop
+1. Identify the available validation commands and execution environment.
+2. Run the relevant current checks before editing.
+3. Capture pre-existing failures, warnings, incomplete states, and visual differences.
+4. Keep pre-existing issues separate from regressions introduced by this work.
+5. Record enough evidence to compare the final result against the baseline.
+
+## 4. Build a Verifiable Plan
+
+Break the task into small, complete work units. Each work unit must have a clear goal, relevant inspection target, concrete action, and validation method.
+
+${workUnitsFor(a)}
+
+Reorder or refine these work units when repository evidence or task dependencies show a better sequence.
+
+## 5. Execute the Tool-Using Loop
+
 For every work unit, repeat:
-- **Inspect** — read the relevant code, files, logs, or references; determine the smallest effective change.
-- **Plan** — choose the next concrete action. Prefer small, reversible changes, existing project patterns, minimal dependencies, and clear validation.
-- **Act** — perform the action (edit/create files, update schemas, modify routes, add validation, run commands).
-- **Run** — run the most relevant validation after each meaningful change (tests, type check, lint, build, preview, API request).
-- **Observe** — read the complete result: errors, warnings, failed tests, runtime behavior, unexpected side effects. Do not assume the change worked.
-- **Compare** — compare against the original request, the source of truth, project conventions, and completion criteria. Identify the largest remaining discrepancy.
-- **Correct** — trace the discrepancy to its cause, make the smallest effective correction, rerun validation, and continue the loop. Do not merely report a failure that can reasonably be fixed.
 
-## 6. Failure-Handling Rules
-When a command or test fails: read the complete error output; determine whether the failure is introduced, pre-existing, environmental, missing-data, or a wrong assumption; trace it to its source; correct the source, not the symptom; rerun the failed validation and related validations.
-Do not: disable tests to make them pass, delete assertions without justification, suppress errors without understanding them, replace real behavior with hardcoded success, claim success without rerunning validation, or ignore warnings that indicate real problems.
+### A. Inspect
+Read the relevant files, logs, references, tests, output, or runtime state. Determine what currently exists and what the smallest effective change should be.
 
-## 7. Decision Rules
-Make reasonable implementation decisions independently when they can be inferred from existing patterns, the supplied reference, conventions, adjacent components, tests, documentation, or stated intent.
-Ask for user input only when blocked by: missing credentials, missing required assets, an irreversible destructive action, conflicting requirements, a product decision with materially different outcomes, or information that cannot reasonably be inferred. Do not ask for confirmation between normal development steps.
+### B. Plan
+Choose one concrete next action. Prefer a focused, reversible change that follows existing project patterns.
 
-## 8. Engineering Standards
-Preserve existing architecture and conventions; reuse appropriate components; avoid unnecessary dependencies and unrelated refactoring; keep changes focused, readable, and maintainable; add error handling and tests for important behavior; preserve backward compatibility where required; never expose secrets; validate inputs and outputs; document non-obvious decisions.
+### C. Call a Tool
+Use the appropriate tool to search, read, edit, create, run, test, render, inspect, or compare.
 
-## 9. Completion Criteria
-Continue the loop until all applicable criteria are true:
-- Every requirement stated in the task is implemented and works correctly
-- Required files or deliverables exist
-- No new runtime errors; type checking, linting, tests, and build all pass
-- The application launches successfully and the result matches the source of truth
-- Important edge cases have been tested
-- Known differences are documented honestly
+### D. Observe
+Read the complete tool result. Examine errors, warnings, failed assertions, runtime behavior, generated output, visual mismatches, and side effects.
 
-Do not declare completion until the criteria have been verified.
+### E. Decide
+Based on observed evidence, choose the next action. Never assume the previous action worked.
 
-## 10. Stopping Conditions
-Stop only on: **successful completion** (all criteria verified), a **genuine blocker** (report what is blocked, why, what was completed, what is required, and the safest next action), or a **safety/scope boundary** (unauthorized destructive changes, exposed secrets, exceeded scope, or fabricated results).
+### F. Correct
+Trace the largest remaining discrepancy to its root cause. Make the smallest effective correction.
 
-## 11. Final Validation & Report
-Before reporting completion: review the original request and every criterion; run the final test suite, type check, lint, and build; launch/preview the result; review the final diff for unintended changes, leftover debug code, or committed secrets. If any validation fails, return to the loop.
-Then report: **Summary**, **Work Completed**, **Files Created/Modified**, **Validation Performed** (command → result), **Final Status**, **Known Differences or Limitations**, and one **Recommended Next Step**. Do not claim completion, parity, or successful validation unless it was actually verified.`;
+### G. Repeat
+Rerun the relevant validation and continue the loop until the current work unit and all global completion criteria are verified.
+
+## 6. Example Agentic Trace
+
+${exampleTrace(a)}
+
+A concrete software loop may look like:
+
+1. Grep the codebase → find the relevant route or component
+2. Read the file → understand the current handler or UI
+3. Edit the file → implement the requirement
+4. Run tests → observe failures
+5. Read failure output → identify the missing fixture, invalid assumption, or regression
+6. Edit implementation or fixtures → correct the root cause
+7. Run tests again → confirm they pass
+8. Launch or preview → compare behavior against the source of truth
+9. Fix the largest remaining mismatch
+10. Repeat until complete
+11. Report summary → done
+
+## 7. Failure-Handling Rules
+
+When a tool call, command, test, build, or visual check fails:
+
+1. Read the complete output.
+2. Classify the failure as introduced, pre-existing, environmental, missing-data, missing-access, or assumption-related.
+3. Trace the failure to its source.
+4. Fix the source rather than hiding the symptom.
+5. Rerun the failed check.
+6. Run related checks for regressions.
+7. Update the task ledger with what was learned and what remains.
+
+Do not disable tests, remove assertions without justification, suppress meaningful errors, hardcode success, fabricate tool results, or claim completion without rerunning validation.
+
+## 8. Decision Rules
+
+Act independently when a decision can be safely inferred from:
+
+- The original request
+- Supplied references
+- Existing project conventions
+- Adjacent implementation patterns
+- Tests and schemas
+- Standard accessibility, security, and quality practices
+
+Stop and request input only for a genuine blocker such as missing credentials, inaccessible required assets, conflicting source-of-truth requirements, an irreversible destructive action, or a product decision with materially different valid outcomes.
+
+Do not ask for confirmation between normal loop iterations.
+
+## 9. Engineering and Quality Standards
+
+- Preserve existing architecture, behavior, and conventions unless the request explicitly requires change.
+- Reuse appropriate assets, utilities, components, and tests.
+- Keep edits focused and avoid unrelated refactoring.
+- Add or update validation for important behavior.
+- Protect secrets, private data, and destructive operations.
+- Prefer evidence from actual runs over assumptions.
+- Keep the result maintainable, accessible, responsive, and performant where applicable.
+- Remove temporary debugging code before completion.
+
+## 10. Completion Criteria
+
+Continue looping until every applicable criterion below is verified:
+
+${tailoredCompletionCriteria(a)}
+
+Do not declare completion merely because code was written or a document was generated.
+
+## 11. Stopping Conditions
+
+Stop only when one of these conditions is true:
+
+### Successful Completion
+All completion criteria have been verified with observed evidence.
+
+### Genuine Blocker
+A required credential, asset, permission, source, environment, or user decision is unavailable. Report:
+- What is blocked
+- Why it is blocked
+- What was completed
+- What evidence was gathered
+- The exact input or access required
+- The safest next action
+
+### Safety or Scope Boundary
+The next action would be unauthorized, destructive, unsafe, expose secrets, exceed scope, or require fabricated results.
+
+## 12. Final Validation
+
+Before the final report:
+
+1. Re-read the original source request.
+2. Review every item in the task ledger.
+3. Run the final relevant validation suite.
+4. Inspect the final output or application state.
+5. Compare the final result against all references and constraints.
+6. Review the final diff or deliverables for unintended changes.
+7. Confirm no temporary code, placeholders, or secrets remain.
+8. If any required check fails, return to the loop.
+
+## 13. Final Report
+
+Report only evidence-backed results:
+
+### Summary
+What was completed and the final outcome.
+
+### Work Completed
+Each implemented deliverable or resolved requirement.
+
+### Files or Artifacts
+Files created, modified, removed, or generated.
+
+### Validation Performed
+Each command, test, preview, comparison, or review and its observed result.
+
+### Final Status
+State which completion criteria passed and whether the task is complete.
+
+### Known Differences or Limitations
+Document anything incomplete, pre-existing, blocked, or intentionally different.
+
+### Recommended Next Step
+Include only one materially useful next step.
+
+Do not claim exact parity, passing tests, successful builds, or completed work unless those results were actually observed.`;
   }
 
   let rawMD = '';           // source of truth for the converted prompt
@@ -753,13 +1479,28 @@ Then report: **Summary**, **Work Completed**, **Files Created/Modified**, **Vali
     if(!input.value){ say('Nothing to clear'); return; }
     snapshot();                                        // make Clear undoable
     input.value = '';
+    $('fileMeta').textContent = 'Paste or upload';
+    $('fileMeta').title = 'Paste, type, drop, or upload a supported document';
+    clearConvertedOutput();
     updateCount();
     input.focus();
     say('Cleared — tap Undo to restore');
   };
 
-  function updateCount(){ $('charCount').textContent = input.value.length + ' chars'; }
-  input.addEventListener('input', updateCount);
+  let smartSummaryTimer;
+  function updateCount(){
+    $('charCount').textContent = input.value.length + ' chars';
+    clearTimeout(smartSummaryTimer);
+    smartSummaryTimer = setTimeout(updateSmartSummary, 140);
+  }
+  input.addEventListener('input', ()=>{
+    if(input.value.trim() && $('fileMeta').textContent !== 'Pasted text' && !$('fileMeta').textContent.includes('.')){
+      $('fileMeta').textContent = 'Typed text';
+      $('fileMeta').title = 'Text entered directly in the editor';
+    }
+    updateCount();
+  });
+  updateCount();
 
   /* ---------------- sharing ---------------- */
   function getMD(){
@@ -771,7 +1512,7 @@ Then report: **Summary**, **Work Completed**, **Files Created/Modified**, **Vali
 
   $('shCopy').onclick = async ()=>{
     const t = getMD(); if(!t) return;
-    try{ await navigator.clipboard.writeText(t); say('.md prompt copied to clipboard'); }
+    try{ await navigator.clipboard.writeText(t); say((convMode==='loop' ? 'Agentic loop' : '.md prompt') + ' copied to clipboard'); }
     catch{ say('Copy failed — select the output text manually'); }
   };
 
@@ -796,7 +1537,7 @@ Then report: **Summary**, **Work Completed**, **Files Created/Modified**, **Vali
       'UID:' + Date.now() + '@whatsupdocmd','DTSTAMP:' + dt(now),'DTSTART:' + dt(now),'DTEND:' + dt(end),
       'SUMMARY:AI Prompt — ' + esc(firstLine(input.value)),
       'DESCRIPTION:' + esc(t),'END:VEVENT','END:VCALENDAR'].join('\r\n');
-    downloadBlob(new Blob([ics], {type:'text/calendar'}), 'prompt.ics');
+    downloadBlob(new Blob([ics], {type:'text/calendar'}), convMode==='loop' ? 'agentic-loop.ics' : 'prompt.ics');
     say('Calendar event created — open it to add to your calendar');
   };
 

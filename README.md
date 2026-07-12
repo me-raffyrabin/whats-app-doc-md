@@ -1,8 +1,15 @@
 # ⚒️ WhatsUpDocMD
 
-**Turn any raw text into a structured, ready-to-use AI prompt in Markdown — tuned for Claude or GPT.**
+**Turn pasted text or uploaded documents into structured, ready-to-use AI prompts and true agentic-loop prompts in Markdown.**
 
-WhatsUpDocMD is a single-file, zero-dependency web app. Paste an idea, a rough request, or messy notes, and it forges them into a clean `.md` prompt with a role, context, instructions, and output-format scaffold — following each model's prompting conventions. Or go further: convert the same text into a **full agentic loop prompt** for Claude Code or Codex, complete with inspection, validation, and completion-criteria phases. No build step, no backend, no tracking. One `index.html`.
+WhatsUpDocMD is a lightweight, privacy-minded web app for turning rough requests, notes, specifications, and reference documents into clean `.md` prompts for **Claude**, **GPT**, **Claude Code**, or **Codex**.
+
+Paste or type text as before, or upload a **TXT, RTF, DOC, MD, or PDF** file. A built-in smart context engine analyzes the material locally, infers what the request is trying to accomplish, and uses that understanding to generate either:
+
+- a structured regular AI prompt; or
+- an implementation-oriented **agentic loop** that repeatedly inspects, acts, validates, learns from results, and corrects itself until the task is complete or reaches a stopping condition.
+
+No account, backend, database, or tracking is required.
 
 ---
 
@@ -10,134 +17,290 @@ WhatsUpDocMD is a single-file, zero-dependency web app. Paste an idea, a rough r
 
 > **[https://me-raffyrabin.github.io/whats-app-doc-md/](https://me-raffyrabin.github.io/whats-app-doc-md/)**
 
-Try it in 10 seconds:
+Try it in a few steps:
 
-1. Paste any text into the left pane
-2. Pick **Claude** or **GPT**
-3. Tap **Convert to .md prompt** — or **Convert to .md Loop** for an autonomous-agent workflow
-4. Flip between **View Raw** and **Preview**, then copy, share, or save
+1. Paste or type text, drag a supported document onto the input pane, or tap **Upload**
+2. Choose **Claude** or **GPT**
+3. Review the smart-context summary
+4. Tap **Convert to .md prompt** for a regular prompt
+5. Tap **Convert to Agentic .md Loop** for a self-correcting Claude Code or Codex workflow
+6. Switch between **View Raw** and **Preview**, then copy, share, email, or save the result
 
 ---
 
 ## ✨ Features
 
-### 🎯 Model-aware prompt templates
+### 📄 Paste, type, drop, or upload
+
+The original copy-and-paste editor remains fully available. Document upload now feeds extracted text into the same editor and conversion pipeline, so uploaded content can still be reviewed, edited, formatted, and converted before export.
+
+| File type | Processing method |
+|---|---|
+| **TXT** | Native browser text reading |
+| **MD** | Native browser text reading; Markdown source is preserved |
+| **RTF** | Local RTF cleanup and text extraction |
+| **DOC** | Local best-effort extraction from legacy Microsoft Word binary files |
+| **PDF** | Client-side text extraction with PDF.js, loaded only when a PDF is used |
+
+The upload control also supports drag-and-drop. The current filename and character count appear above the editor.
+
+#### File-processing notes
+
+- Maximum upload size: **20 MB**
+- Text extraction happens in the browser
+- Scanned or image-only PDFs do not contain selectable text and therefore require OCR before upload
+- Legacy `.doc` is a binary format with many variations; extraction is best-effort. Saving difficult files as RTF, TXT, MD, or text-based PDF will produce more reliable results
+- PDF.js is downloaded from cdnjs only when PDF support is first used. The uploaded PDF itself is processed locally and is not sent to the CDN
+
+---
+
+### 🧠 Smart text processing engine
+
+Before conversion, WhatsUpDocMD analyzes the source text to infer its intended meaning rather than simply wrapping it in a fixed template.
+
+The engine identifies:
+
+- likely task type, such as software, research, design, writing, data, planning, or general work
+- primary goal
+- intended goals
+- expected deliverables
+- explicit requirements
+- constraints and “do not” rules
+- referenced files, URLs, attachments, or sources of truth
+- testing and validation signals
+- success criteria
+- interpretation confidence
+- an appropriate expert role and validation strategy
+
+The analysis is deterministic and runs locally in the browser. It does not call an external LLM or send the source text to a server.
+
+The editor displays a compact status such as:
+
+> Understood as software task · 3 goals · 5 requirements · 2 constraints
+
+Both regular prompts and agentic loops use this structured understanding.
+
+---
+
+### 🎯 Model-aware regular prompts
+
 | Mode | Structure | Accent |
-|------|-----------|--------|
-| **Claude** | XML-tagged sections (`<context>`, `<instructions>`, `<output_format>`) per Anthropic's prompting guidance | Gold |
-| **GPT** | Pure Markdown headers (`## System`, `## User Request`, `## Instructions`, `## Output Format`) | Teal |
+|---|---|---|
+| **Claude** | XML-tagged smart context, source context, instructions, and output format | Gold |
+| **GPT** | Markdown smart-context analysis, user request, instructions, and output format | Teal |
 
-Switching models re-converts your text live and re-themes the whole UI.
+A regular prompt asks the target model to understand the request and produce the requested answer or artifact. It does not, by itself, require repeated tool use or self-correction.
 
-### 🔁 Agentic Loop mode
-The second convert button, **Convert to .md Loop**, transforms your text into a complete agentic loop prompt — the kind you hand to **Claude Code** or **Codex** and let run autonomously:
+Switching models re-converts the current source in the active conversion mode and re-themes the interface.
+
+---
+
+## 🔁 Agentic Loop mode
+
+### Agentic Loop Definition
+
+> A loop—the **agentic loop**—is what the tool does with a prompt. Claude Code and Codex do not merely answer once. They cycle:
+>
+> **read the prompt → plan → call a tool → observe the result → decide the next action → repeat**
+>
+> Tool calls may include editing a file, running a test, grepping the codebase, reading logs, launching an application, or comparing an implementation against a reference. The loop is what allows the agent to diagnose and fix its own failing tests or incomplete work without requiring the user to re-prompt.
+
+WhatsUpDocMD expresses this as an expanded operating cycle:
 
 > **UNDERSTAND → INSPECT → PLAN → ACT → RUN → OBSERVE → COMPARE → CORRECT → REPEAT**
 
-Your text becomes the task and source of truth, wrapped in an 11-phase operating template:
+The **Convert to Agentic .md Loop** button creates a task-aware loop rather than a generic prompt wrapper.
 
-1. **Understand the Task** — requirements, constraints, and an internal task map before any changes
-2. **Inspect the Environment** — search the codebase, read configs, find existing patterns and reuse them
-3. **Establish a Baseline** — build, type-check, lint, and test *before* changing anything; keep pre-existing failures separate
-4. **Implementation Plan** — small, verifiable work units, each with its own validation
-5. **Execute the Loop** — Inspect → Plan → Act → Run → Observe → Compare → Correct, one work unit at a time
-6. **Failure-Handling Rules** — trace failures to the source; never disable tests or hardcode success
-7. **Decision Rules** — act independently on inferable decisions; ask only when genuinely blocked
-8. **Engineering Standards** — preserve conventions, focused diffs, no unrelated refactoring
-9. **Completion Criteria** — verified, not assumed
-10. **Stopping Conditions** — success, genuine blocker, or safety/scope boundary
-11. **Final Validation & Report** — full suite rerun, diff review, and an honest structured report
+The generated loop includes:
 
-The loop is **model-aware** too:
+1. **Role and responsibility** tailored to the detected task type
+2. **Agentic Loop Definition** explaining repeated tool use and self-correction
+3. **Smart Task Interpretation** with goals, deliverables, requirements, constraints, references, and validation signals
+4. **Original Source Request** preserved as the authoritative input
+5. **Read and Understand** phase with an internal task ledger
+6. **Task-specific inspection priorities**
+7. **Baseline establishment** before substantial changes
+8. **Dynamically generated work units** derived from the intended goals and deliverables
+9. **Tool-using execution loop**
+10. **Tailored example trace**
+11. **Failure-handling and decision rules**
+12. **Dynamic completion criteria**
+13. **Stopping conditions, final validation, and evidence-backed reporting**
 
-| Mode | Task framing | Agent addressed |
-|------|--------------|-----------------|
-| **Claude** | `<task>` XML tags | Claude Code |
-| **GPT** | `## Task` Markdown header | Codex |
+### What the loop changes
 
-The Claude/GPT toggle remembers which conversion you last ran — switch models and it live re-converts in the same mode. The output label and exported filename follow suit: `prompt.claude.md`, `loop.claude.md`, `prompt.gpt.md`, `loop.gpt.md`.
+A regular prompt effectively says:
 
-### 👁️ View Raw / Preview toggle
-The output pane has two modes, switchable with a pill toggle:
+> Understand this request and answer it.
 
-- **View Raw** — the exact `.md` source, in monospace, ready to copy
-- **Preview** — the same Markdown fully *rendered*: headings, bold/italic/strikethrough, blockquotes, inline code and code blocks, bulleted/numbered/task lists (with checkboxes), links, images, tables, and dividers
+An agentic-loop prompt says:
 
-The renderer is ~70 lines of built-in vanilla JS — no Markdown library — and HTML-escapes all content, so Claude's XML tags display safely as literal text.
+> Understand the request, inspect the environment, plan the next action, use tools, observe what happened, correct failures, rerun validation, and continue until the requested outcome is verified.
 
-### 🧰 Full Markdown toolbar — with a learning mode
-Fifteen formatting tools plus two editing actions, all with clean, intuitive icons:
+Example:
 
-**H1 · H2 · Bold · Italic · Strikethrough · Blockquote · Inline code · Code block · Bulleted list · Numbered list · Task list · Link · Image · Table · Divider · ↩︎ Undo · 🗑 Clear**
+```text
+1. Grep the codebase → find routes/patients.ts
+2. Read the file → understand the current handler
+3. Edit the file → add Zod validation for dob
+4. Run npm test → observe 2 failures
+5. Read the failures → identify a mock missing dob
+6. Edit the fixtures → add a valid dob
+7. Run npm test again → all tests pass
+8. Review completion criteria → verified
+9. Report summary → done
+```
 
-- **Single tap** → applies the format to your selected text (or inserts a placeholder)
-- **Double tap** → copies a *sample snippet* of that format to your clipboard, so you can paste it into the editor and see exactly how the syntax works
-- **Undo** → steps back through recent changes (typing bursts, toolbar formatting, and clears — up to 100 states)
-- **Clear** → empties the input in one tap, with a warm-red hover so it can't be mistaken — and it's always undoable
+### Model-aware loop output
 
-### 📤 Share anywhere
-| Action | How it works |
-|--------|--------------|
-| **Copy** | Clipboard API |
-| **Email** | `mailto:` with the prompt in the body |
-| **SMS** | Cross-platform `sms:?&body=` deep link |
-| **Calendar** | Generates a downloadable `.ics` event with the prompt in the description |
-| **Save to Files** | Web Share API with a file payload — surfaces the native **Save to Files** sheet on iOS and Android; falls back to a `.md` download on desktop |
-| **More…** | Native OS share sheet (AirDrop, Messages, Notes, etc.) |
+| Selected mode | Task framing | Agent addressed |
+|---|---|---|
+| **Claude** | `<source_request>` XML tags | Claude Code |
+| **GPT** | `## Source Request` Markdown section | Codex |
 
-All share actions always send the **raw Markdown**, regardless of which view mode is showing — and the exported filename reflects both the model and the conversion mode (e.g. `loop.gpt.md`).
+The output label and downloaded filename follow the active mode:
 
-### 📱 Runs like a native app on iOS
-- On iPhone and iPad, an **Add to Home** button appears in the header (hidden on all other devices, and hidden once installed)
-- Tapping it opens a step-by-step sheet guiding you through Safari's **Share → Add to Home Screen** flow
-- Installed, WhatsUpDocMD launches full screen — no browser chrome, black-translucent status bar, custom gold-on-void app icon (`apple-touch-icon.png`)
+- `prompt.claude.md`
+- `prompt.gpt.md`
+- `loop.claude.md`
+- `loop.gpt.md`
+
+---
+
+### 👁️ View Raw / Preview
+
+The output pane has two modes:
+
+- **View Raw** — exact `.md` source in monospace, ready to copy or save
+- **Preview** — rendered Markdown for easier review
+
+The built-in renderer supports:
+
+- headings
+- bold, italic, and strikethrough
+- blockquotes
+- inline code and fenced code blocks
+- bulleted, numbered, and task lists
+- links and images
+- tables
+- horizontal rules
+
+All source is HTML-escaped before rendering.
+
+---
+
+### 🧰 Markdown toolbar and learning mode
+
+Formatting tools:
+
+**H1 · H2 · Bold · Italic · Strikethrough · Blockquote · Inline code · Code block · Bulleted list · Numbered list · Task list · Link · Image · Table · Divider · Undo · Clear**
+
+- **Single tap** applies formatting to the current selection or inserts a placeholder
+- **Double tap** copies a sample of the selected Markdown syntax
+- **Undo** restores prior typing bursts, formatting operations, and clears
+- **Clear** empties the editor and resets the current generated output; the clear remains undoable
+
+---
+
+### 📤 Share and export
+
+| Action | Behavior |
+|---|---|
+| **Copy** | Copies raw Markdown |
+| **Email** | Opens a `mailto:` draft with the generated prompt |
+| **SMS** | Opens the device messaging composer |
+| **Calendar** | Creates a downloadable `.ics` event |
+| **Save to Files** | Uses native file sharing where supported, with download fallback |
+| **More…** | Opens the operating system share sheet |
+
+Sharing always uses raw Markdown, even when Preview is active.
+
+---
+
+### 📱 iOS Home Screen support
+
+On supported iPhone and iPad browsers:
+
+- an **Add to Home** button appears when the app is not already installed
+- a guided sheet explains Safari’s **Share → Add to Home Screen** flow
+- the installed app opens in standalone mode with safe-area support
+
+---
 
 ### 🎨 Design
-- Void-and-gold dark theme with a Cormorant Garamond / Inter type pairing
-- Responsive two-pane layout (stacks on mobile), safe-area aware
-- The two convert buttons sit side by side — a centered pill pair on desktop, a full-width two-column grid on mobile
-- Keyboard focus states throughout, `prefers-reduced-motion` respected
+
+- dark void-and-gold Claude theme
+- dark teal-accented GPT theme
+- Cormorant Garamond and Inter typography
+- responsive two-pane desktop layout
+- stacked mobile layout
+- safe-area support
+- keyboard-visible focus states
+- reduced-motion support
+- drag-and-drop visual state
+- compact smart-context status display
 
 ---
 
 ## 🚀 Deploy your own
 
-WhatsUpDocMD is static — any host works. GitHub Pages is the fastest:
+WhatsUpDocMD remains a static application and can be hosted on GitHub Pages or any static web host.
 
-1. **Fork or clone** this repository
-2. Keep both files at the repo root:
-   ```
+1. Fork or clone the repository
+2. Keep these files at the repository root:
+
+   ```text
    index.html
    apple-touch-icon.png
+   README.md
    ```
-3. Go to **Settings → Pages → Source**, select **Deploy from a branch**, choose `main` / root
-4. Your app is live at `https://me-raffyrabin.github.io/whats-app-doc-md/`
-5. Update the **Live Demo** link at the top of this README
 
-No build tools, package managers, or servers required.
+3. Open **Settings → Pages**
+4. Select **Deploy from a branch**
+5. Choose the `main` branch and repository root
+6. Update the Live Demo URL in this README when needed
+
+No build tools, package managers, database, or application server are required.
 
 ---
 
-## 🛠️ Tech notes
+## 🛠️ Technical notes
 
-- **Single file** — all CSS and JS are inline in `index.html`; the only external requests are Google Fonts
-- **No dependencies, no framework** — vanilla JS, including the built-in Markdown renderer
-- **Raw Markdown is the source of truth** — the preview is derived from it, and all sharing/exporting reads the raw source, never the rendered HTML
-- **Conversion mode is stateful** — a `convMode` flag (`prompt` | `loop`) tracks the last conversion, so the model toggle's live re-convert, the output label, and the export filename all stay in sync
-- **The loop template is embedded** — `buildLoop(text, model)` fills an 11-phase agentic loop template inline, with model-specific task framing (`<task>` tags for Claude, `## Task` for GPT); no fetch, no external template file
-- **Undo history** snapshots before each toolbar action and at the start of each typing burst (800 ms window), capped at 100 states
-- **iOS detection** covers modern iPadOS (which reports as `MacIntel`) via `maxTouchPoints`, and suppresses the install button when already running in standalone mode
-- **Clipboard, Web Share, and File APIs** degrade gracefully with toast feedback when unavailable
-- **Double-tap disambiguation** uses a 300 ms tap window so single-tap formatting and double-tap samples coexist on both mouse and touch
+- **Single application file** — UI, styles, document extraction, smart analysis, converters, Markdown preview, and sharing logic live in `index.html`
+- **No framework** — vanilla HTML, CSS, and JavaScript
+- **Local semantic heuristics** — the smart engine uses task classification, action patterns, requirement detection, constraint detection, reference extraction, and task-specific validation rules
+- **Raw Markdown is the source of truth** — Preview and sharing are derived from `rawMD`
+- **Stateful conversion mode** — `convMode` tracks `prompt` or `loop`
+- **Dynamic loop generation** — `buildLoop(text, model)` uses `analyzeIntent(text)` to create tailored work units, inspection instructions, validation strategies, and completion criteria
+- **Local file processing** — TXT, MD, RTF, and DOC are processed without upload to a server
+- **Lazy PDF support** — PDF.js 3.11.174 loads from cdnjs only when a PDF is selected
+- **Undo history** — up to 100 snapshots, including typing bursts and formatting changes
+- **Graceful browser fallbacks** — Clipboard, File, Web Share, and download capabilities provide user feedback when unavailable
+- **External resources** — Google Fonts load for typography; PDF.js loads only when needed for PDF extraction
+
+---
+
+## 🔒 Privacy
+
+WhatsUpDocMD does not include:
+
+- user accounts
+- analytics
+- tracking
+- a backend
+- cloud document storage
+- automatic document uploads to an AI service
+
+Source text and extracted document text remain inside the browser session. As with any static web app, users should review the hosting environment and third-party resource policy before processing highly sensitive material.
 
 ---
 
 ## 📁 Project structure
 
-```
+```text
 whats-app-doc-md
-├── index.html            # The entire app (UI + converter + loop template + MD renderer)
-├── apple-touch-icon.png  # 180×180 iOS home screen icon
+├── index.html            # UI, upload readers, smart engine, prompt/loop builders, preview, sharing
+├── apple-touch-icon.png  # iOS Home Screen icon
 └── README.md
 ```
 
@@ -145,17 +308,21 @@ whats-app-doc-md
 
 ## 🧭 Roadmap ideas
 
-- [ ] Full PWA manifest + service worker for offline use and Android install prompts
-- [ ] Custom prompt templates (user-defined sections)
-- [ ] User-editable loop template (customize phases, completion criteria, stopping conditions)
-- [ ] Redo (forward history)
-- [ ] Prompt history with local storage
+- [ ] DOCX support with structured paragraph extraction
+- [ ] OCR support for scanned PDFs and images
+- [ ] Offline packaging of PDF.js
+- [ ] Full PWA manifest and service worker
+- [ ] User-editable smart-analysis rules
+- [ ] User-editable loop phases and stopping conditions
+- [ ] Prompt and loop history with local storage
+- [ ] Redo support
+- [ ] Optional local or user-provided AI model integration
 
 ---
 
 ## 📄 License
- 
-Released under the [MIT License - use it, fork it, forge with it.](LICENSE). © 2026 realgothamknights.
+
+Released under the [MIT License — use it, fork it, forge with it.](LICENSE). © 2026 realgothamknights.
 
 ---
 
