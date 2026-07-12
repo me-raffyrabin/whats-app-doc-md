@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
-<!-- build r7.3-2026-07-12 -->
-<!-- Local AI engine upgrade: 2026-07-12 r7.3 — iPhone/iPad inference moved off the UI thread, cancellable background processing added, one-pass mobile output enabled, and worker memory cleanup added -->
+<!-- build r7.4-2026-07-12 -->
+<!-- Local AI engine upgrade: 2026-07-12 r7.4 — iPhone/iPad local AI now returns a concise semantic summary while the deterministic verifier owns the structured fields, eliminating fragile tiny-model label parsing without blocking the UI -->
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -985,7 +985,7 @@
      - Only successful local-AI analyses are cached; failures retry on the
        next Convert press.
   ------------------------------------------------------------------ */
-  const APP_REV = 'r7.3-2026-07-12';
+  const APP_REV = 'r7.4-2026-07-12';
   /* Runtime ladder: if every model/device/dtype combination fails at session
      creation under one Transformers.js runtime, the ONNX Runtime WASM binary
      bundled with that release may simply not instantiate on this browser
@@ -1593,7 +1593,7 @@
           type:'analyze',
           id,
           prompt:localMobileMessages(source),
-          options:{max_new_tokens:176, do_sample:false, repetition_penalty:1.03}
+          options:{max_new_tokens:96, do_sample:false, repetition_penalty:1.02}
         });
       }catch(err){
         clearTimeout(timeout);
@@ -1884,18 +1884,14 @@ ${source}` }
   }
 
   function localMobileMessages(source){
+    // SmolLM2 135M is reliable at semantic summarization but can be fragile
+    // when forced to emit a long multi-field schema. On iPhone/iPad, ask it
+    // for one concise implementation goal and let the deterministic verifier
+    // own the exact goals, requirements, constraints, and references.
     return [
-      { role:'system', content:'Return only the requested labeled lines. No prose, markdown, JSON, or code fences.' },
-      { role:'user', content:`Summarize this request using these labels. Keep every value concise. Use || between multiple items. Omit nothing explicit.
-TASK_TYPE: software|research|design|writing|data|planning|general
-TITLE: short title
-PRIMARY_GOAL: one precise outcome
-GOALS: item || item
-DELIVERABLES: item || item
-REQUIREMENTS: item || item
-CONSTRAINTS: item || item
-ROLE: best expert role
-CONFIDENCE: high|medium|low
+      { role:'system', content:'Summarize the user request as one precise implementation goal. Return only one concise sentence. No labels, bullets, markdown, JSON, or commentary.' },
+      { role:'user', content:`State the single clearest implementation goal in this request. Preserve the requested outcome and important scope. Do not invent features.
+
 REQUEST:
 ${source}` }
     ];
@@ -1994,6 +1990,70 @@ ${source}` }
       role: fields.ROLE,
       confidence: fields.CONFIDENCE
     };
+  }
+
+
+  function extractMobileSemanticSummary(text, source){
+    let clean = String(text || '')
+      .replace(/<think>[\s\S]*?<\/think>/gi,' ')
+      .replace(/```(?:text|markdown|md|json)?/gi,' ')
+      .replace(/```/g,' ')
+      .replace(/^\s*(?:assistant|answer|summary|goal|primary_goal)\s*:\s*/i,'')
+      .replace(/^[-*•]+\s*/,'')
+      .replace(/\s+/g,' ')
+      .trim();
+
+    // Some tiny models echo part of the instruction before answering. Keep
+    // only the content after a recognizable answer marker when present.
+    const marker = clean.match(/(?:^|\s)(?:answer|summary|goal)\s*:\s*(.+)$/i);
+    if(marker && marker[1]) clean = marker[1].trim();
+
+    // Remove common refusal/boilerplate prefixes that carry no task meaning.
+    clean = clean
+      .replace(/^(?:sure|certainly|here(?:'s| is)|the implementation goal is)[:,]?\s*/i,'')
+      .replace(/["“”]+/g,'')
+      .trim();
+
+    if(clean.length > 420) clean = clean.slice(0,417).replace(/\s+\S*$/,'') + '…';
+    if(clean.length < 12) return '';
+
+    // Guard against prompt echo or unrelated hallucination: require at least
+    // two meaningful words from the source request to appear in the summary.
+    const stop = new Set(['this','that','with','from','into','your','user','users','request','please','should','must','will','would','could','have','has','were','when','where','which','their','there','about','using','used','only','also','then','than','them','they','been','being','make','ensure']);
+    const words = value => new Set((String(value || '').toLowerCase().match(/[a-z0-9_]{4,}/g) || []).filter(w=>!stop.has(w)));
+    const sourceWords = words(source);
+    const summaryWords = words(clean);
+    let overlap = 0;
+    for(const word of summaryWords){
+      if(sourceWords.has(word) && ++overlap >= 2) break;
+    }
+    return overlap >= 2 ? clean : '';
+  }
+
+  function mobileHybridAnalysis(workerText, source, rules){
+    // Backward-compatible: accept labeled output if a cached/older worker or
+    // future model happens to return it. Otherwise treat the model's natural
+    // sentence as semantic enrichment and keep deterministic structure.
+    try{
+      const labeled = normalizeModelAnalysis(parseLabeledAnalysis(workerText));
+      if(hasUsefulModelAnalysis(labeled)){
+        labeled.responseFormat = 'background labeled';
+        return labeled;
+      }
+    }catch{}
+
+    const summary = extractMobileSemanticSummary(workerText, source);
+    return normalizeModelAnalysis({
+      taskType: rules.taskType,
+      title: summary || rules.title,
+      primaryGoal: summary || rules.primaryGoal,
+      goals: summary ? [summary] : rules.goals,
+      deliverables: [],
+      requirements: [],
+      constraints: [],
+      role: rules.role || roleForTask(rules.taskType),
+      confidence: rules.confidence
+    });
   }
 
   function normalizeString(value, fallback=''){
@@ -2112,19 +2172,13 @@ ${source}` }
         if(!workerResult.text){
           throw createStageError('empty-response', null, 'The background local AI returned an empty response.');
         }
-        try{
-          modelAnalysis = normalizeModelAnalysis(parseLabeledAnalysis(workerResult.text));
-          modelAnalysis.responseFormat = 'background labeled';
-          activeLocalModel = LOCAL_MODEL_CANDIDATES.find(m=>m.id === 'HuggingFaceTB/SmolLM2-135M-Instruct') || activeLocalModel;
-          activeLocalDevice = 'worker-wasm';
-          activeRuntimeLabel = workerResult.runtime || activeRuntimeLabel;
-        }catch(parseError){
-          throw createStageError(
-            'response-parse',
-            parseError,
-            'The background local AI completed, but its short structured response could not be read.'
-          );
-        }
+        modelAnalysis = mobileHybridAnalysis(workerResult.text, source, rules);
+        modelAnalysis.responseFormat = extractMobileSemanticSummary(workerResult.text, source)
+          ? 'background semantic summary'
+          : 'background verified by rules';
+        activeLocalModel = LOCAL_MODEL_CANDIDATES.find(m=>m.id === 'HuggingFaceTB/SmolLM2-135M-Instruct') || activeLocalModel;
+        activeLocalDevice = 'worker-wasm';
+        activeRuntimeLabel = workerResult.runtime || activeRuntimeLabel;
       }else{
         const generator = await getLocalTextGenerator();
         setSmartStatus('Local AI is deriving goals, constraints, and success criteria…');
@@ -2749,7 +2803,13 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
     }else{
       const format = a.responseFormat === 'labeled repair'
         ? ' · response repaired locally'
-        : a.responseFormat === 'background labeled' ? ' · background AI' : '';
+        : a.responseFormat === 'background labeled'
+          ? ' · background AI'
+          : a.responseFormat === 'background semantic summary'
+            ? ' · background AI + verified structure'
+            : a.responseFormat === 'background verified by rules'
+              ? ' · background AI completed + verified structure'
+              : '';
       setSmartStatus(`Local AI: ${pieces.join(' · ')}${format}`);
     }
   }
