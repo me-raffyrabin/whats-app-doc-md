@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
-<!-- Local AI engine upgrade: 2026-07-12 — Transformers.js v4 + Qwen2.5-0.5B-Instruct (WebGPU/WASM), replaces flan-t5-small -->
+<!-- Local AI engine upgrade: 2026-07-12 r2 — Transformers.js v4, iOS memory-safe model ladder (SmolLM2 on iPhone/iPad), crash ledger + draft restore after memory-kill reloads -->
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -932,8 +932,9 @@
   ------------------------------------------------------------------ */
   const TRANSFORMERS_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0';
   const LOCAL_MODEL_CANDIDATES = [
-    { id:'onnx-community/Qwen2.5-0.5B-Instruct', label:'Qwen2.5 0.5B Instruct', approxDownload:'≈350 MB' },
-    { id:'HuggingFaceTB/SmolLM2-360M-Instruct',  label:'SmolLM2 360M Instruct', approxDownload:'≈250 MB' }
+    { id:'onnx-community/Qwen2.5-0.5B-Instruct', label:'Qwen2.5 0.5B Instruct', approxDownload:'≈350 MB', heavy:true },
+    { id:'HuggingFaceTB/SmolLM2-360M-Instruct',  label:'SmolLM2 360M Instruct', approxDownload:'≈250 MB', heavy:false },
+    { id:'HuggingFaceTB/SmolLM2-135M-Instruct',  label:'SmolLM2 135M Instruct', approxDownload:'≈100 MB', heavy:false }
   ];
   const VALID_TASK_TYPES = new Set(['software','research','design','writing','data','planning','general']);
   let localTextGenerator = null;
@@ -946,6 +947,69 @@
 
   function activeLocalModelId(){
     return `${activeLocalModel.id} (${activeLocalDevice})`;
+  }
+
+  /* ---- device memory guard + crash ledger ----
+     iOS Safari enforces a hard per-tab memory cap. Building the ONNX
+     inference session for a ~0.5B model can spike past it, and Safari
+     responds by silently reloading the page — the download hits 100%,
+     session init begins, and the tab is killed. Two defenses:
+     1. On iOS/iPadOS, heavyweight models are skipped up front.
+     2. A localStorage "pending attempt" record is written before each
+        session init and cleared on success, on a handled error, or on a
+        deliberate page exit (pagehide). If the page boots and finds a
+        leftover record, that model+device combination crashed the tab —
+        it is blocklisted so the next attempt automatically steps down
+        to a smaller model instead of reload-looping. */
+  const LEDGER_PENDING_KEY = 'wud_localai_pending';
+  const LEDGER_BLOCKED_KEY = 'wud_localai_blocked';
+
+  function isAppleTouchDevice(){
+    const ua = navigator.userAgent || '';
+    const iThing = /iPhone|iPad|iPod/i.test(ua);
+    // iPadOS 13+ reports itself as macOS but exposes multitouch.
+    const iPadAsMac = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+    return iThing || iPadAsMac;
+  }
+
+  function readBlockedCombos(){
+    try{
+      const parsed = JSON.parse(localStorage.getItem(LEDGER_BLOCKED_KEY) || '[]');
+      return Array.isArray(parsed) ? parsed : [];
+    }catch{ return []; }
+  }
+
+  function blockCombo(comboKey){
+    const blocked = readBlockedCombos();
+    if(!blocked.includes(comboKey)){
+      blocked.push(comboKey);
+      try{ localStorage.setItem(LEDGER_BLOCKED_KEY, JSON.stringify(blocked)); }catch{}
+    }
+  }
+
+  function setPendingAttempt(comboKey){
+    try{ localStorage.setItem(LEDGER_PENDING_KEY, JSON.stringify({combo:comboKey, ts:Date.now()})); }catch{}
+  }
+
+  function clearPendingAttempt(){
+    try{ localStorage.removeItem(LEDGER_PENDING_KEY); }catch{}
+  }
+
+  // A deliberate exit (tab close, navigation) fires pagehide; a memory-kill
+  // reload does not. Leftover pending records therefore indicate a crash.
+  window.addEventListener('pagehide', clearPendingAttempt);
+
+  function processCrashLedgerOnBoot(){
+    let pending = null;
+    try{ pending = JSON.parse(localStorage.getItem(LEDGER_PENDING_KEY) || 'null'); }catch{}
+    clearPendingAttempt();
+    if(pending && pending.combo){
+      blockCombo(pending.combo);
+      console.warn('[WhatsUpDocMD local AI] Previous session was terminated while initializing', pending.combo,
+        '— that model/device combination is now skipped on this device.');
+      return pending.combo;
+    }
+    return null;
   }
 
   function setSmartStatus(message){
@@ -1004,6 +1068,15 @@
     return (typeof navigator !== 'undefined' && navigator.gpu) ? ['webgpu','wasm'] : ['wasm'];
   }
 
+  function modelCandidatesForDevice(){
+    // Heavy models routinely exceed the iOS Safari per-tab memory cap during
+    // ONNX session creation, which crashes and reloads the page. Skip them
+    // up front on Apple touch devices.
+    return isAppleTouchDevice()
+      ? LOCAL_MODEL_CANDIDATES.filter(m=>!m.heavy)
+      : LOCAL_MODEL_CANDIDATES;
+  }
+
   async function loadPipelineCandidate(T, modelInfo, device){
     localModelDownloadObserved = false;
     return T.pipeline('text-generation', modelInfo.id, {
@@ -1033,11 +1106,21 @@
       T.env.allowLocalModels = false;
       T.env.useBrowserCache = true;
 
+      const blocked = readBlockedCombos();
       const attempts = [];
-      for(const modelInfo of LOCAL_MODEL_CANDIDATES){
+      for(const modelInfo of modelCandidatesForDevice()){
         for(const device of deviceCandidates()){
+          const comboKey = `${modelInfo.id}|${device}`;
+          if(blocked.includes(comboKey)){
+            attempts.push(`${modelInfo.label} on ${device}: skipped (previously crashed this device)`);
+            continue;
+          }
           try{
+            // Record the attempt so a memory-kill reload can identify and
+            // blocklist this combination on the next boot.
+            setPendingAttempt(comboKey);
             const generator = await loadPipelineCandidate(T, modelInfo, device);
+            clearPendingAttempt();
             activeLocalModel = modelInfo;
             activeLocalDevice = device;
             localTextGenerator = generator;
@@ -1046,6 +1129,7 @@
               : `${modelInfo.label} loaded from browser cache (${device})`);
             return generator;
           }catch(err){
+            clearPendingAttempt();
             attempts.push(`${modelInfo.label} on ${device}: ${errorMessage(err)}`);
             console.warn('[WhatsUpDocMD local AI] candidate failed', modelInfo.id, device, err);
           }
@@ -1055,7 +1139,7 @@
       throw createStageError(
         'model-load',
         new Error(attempts.join(' | ')),
-        'No local language model could initialize on this device (all model/device combinations failed).'
+        'No local language model could initialize on this device (all model/device combinations failed or were skipped).'
       );
     })().catch(err=>{
       resetLocalModelSession();
@@ -2091,11 +2175,24 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
   };
 
   let smartSummaryTimer;
+  const DRAFT_KEY = 'wud_draft';
+  let draftSaveTimer;
+  function persistDraft(){
+    clearTimeout(draftSaveTimer);
+    draftSaveTimer = setTimeout(()=>{
+      try{
+        const value = input.value;
+        if(value.trim()) localStorage.setItem(DRAFT_KEY, value.slice(0, 200000));
+        else localStorage.removeItem(DRAFT_KEY);
+      }catch{/* storage may be full or unavailable; typing continues normally */}
+    }, 250);
+  }
   function updateCount(){
     smartAnalysisCache = {text:'', analysis:null};
     $('charCount').textContent = input.value.length + ' chars';
     clearTimeout(smartSummaryTimer);
     smartSummaryTimer = setTimeout(updateSmartSummary, 140);
+    persistDraft();
   }
   input.addEventListener('input', ()=>{
     if(input.value.trim() && $('fileMeta').textContent !== 'Pasted text' && !$('fileMeta').textContent.includes('.')){
@@ -2104,7 +2201,25 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
     }
     updateCount();
   });
+
+  // Restore work after an unexpected reload (e.g. an iOS memory-kill during
+  // model initialization). The crash ledger has already blocklisted the
+  // model that caused it, so the next Convert uses a smaller model.
+  const crashedCombo = processCrashLedgerOnBoot();
+  try{
+    const savedDraft = localStorage.getItem(DRAFT_KEY);
+    if(savedDraft && !input.value.trim()){
+      input.value = savedDraft;
+      $('fileMeta').textContent = 'Restored text';
+      $('fileMeta').title = 'Text restored after the page reloaded';
+    }
+  }catch{}
   updateCount();
+  if(crashedCombo){
+    setTimeout(()=>{
+      setSmartStatus('The previous model was too large for this device — a smaller model will be used. Tap Convert to continue.');
+    }, 200);
+  }
 
   /* ---------------- sharing ---------------- */
   function getMD(){
