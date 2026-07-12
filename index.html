@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
-<!-- build r5-2026-07-12 -->
-<!-- Local AI engine upgrade: 2026-07-12 r5 — visible build rev in diagnostics, dtype q4→q8 fallback for smallest model, service worker stale-build detection -->
+<!-- build r6-2026-07-12 -->
+<!-- Local AI engine upgrade: 2026-07-12 r6 — device-aware dtype ladders (wasm: q8/int8/q4 smallest-first for iOS Safari heap; webgpu: q4f16/q4), memory-lean ORT session options, ledger reset on strategy change -->
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -931,15 +931,22 @@
      - Only successful local-AI analyses are cached; failures retry on the
        next Convert press.
   ------------------------------------------------------------------ */
-  const APP_REV = 'r5-2026-07-12';
+  const APP_REV = 'r6-2026-07-12';
   const TRANSFORMERS_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0';
   const LOCAL_MODEL_CANDIDATES = [
-    // dtypes are tried in order: q4 is smallest; q8 avoids 4-bit matmul ops
-    // in case a given WASM build rejects them during session creation.
-    { id:'onnx-community/Qwen2.5-0.5B-Instruct', label:'Qwen2.5 0.5B Instruct', approxDownload:'≈350 MB', heavy:true,  dtypes:['q4'] },
-    { id:'HuggingFaceTB/SmolLM2-360M-Instruct',  label:'SmolLM2 360M Instruct', approxDownload:'≈250 MB', heavy:false, dtypes:['q4'] },
-    { id:'HuggingFaceTB/SmolLM2-135M-Instruct',  label:'SmolLM2 135M Instruct', approxDownload:'≈100 MB', heavy:false, dtypes:['q4','q8'] }
+    { id:'onnx-community/Qwen2.5-0.5B-Instruct', label:'Qwen2.5 0.5B Instruct', heavy:true  },
+    { id:'HuggingFaceTB/SmolLM2-360M-Instruct',  label:'SmolLM2 360M Instruct', heavy:false },
+    { id:'HuggingFaceTB/SmolLM2-135M-Instruct',  label:'SmolLM2 135M Instruct', heavy:false }
   ];
+
+  /* Dtype choice is device-specific and counter-intuitive: these ONNX
+     exports keep embeddings in fp32 inside the "q4" file, so q4 is often
+     LARGER than int8/q8 (e.g. SmolLM2-135M: q4 ≈ 200 MB vs int8 ≈ 137 MB).
+     Mobile Safari's WASM heap OOMs exactly there, so WASM tries the
+     smallest quantizations first. WebGPU prefers q4f16 (fp16 shaders). */
+  function dtypeLadder(device){
+    return device === 'webgpu' ? ['q4f16','q4'] : ['q8','int8','q4'];
+  }
   const VALID_TASK_TYPES = new Set(['software','research','design','writing','data','planning','general']);
   let localTextGenerator = null;
   let localModelPromise = null;
@@ -1004,6 +1011,15 @@
   window.addEventListener('pagehide', clearPendingAttempt);
 
   function processCrashLedgerOnBoot(){
+    // The blocklist reflects memory behavior of a specific engine strategy.
+    // When the strategy changes (new APP_REV), previously-crashing combos may
+    // now be viable (e.g. smaller dtypes), so start the ledger fresh.
+    try{
+      if(localStorage.getItem('wud_localai_ledger_rev') !== APP_REV){
+        localStorage.removeItem(LEDGER_BLOCKED_KEY);
+        localStorage.setItem('wud_localai_ledger_rev', APP_REV);
+      }
+    }catch{}
     let pending = null;
     try{ pending = JSON.parse(localStorage.getItem(LEDGER_PENDING_KEY) || 'null'); }catch{}
     clearPendingAttempt();
@@ -1188,21 +1204,28 @@
 
   async function loadPipelineCandidate(T, modelInfo, device, dtype){
     localModelDownloadObserved = false;
-    return T.pipeline('text-generation', modelInfo.id, {
+    const options = {
       dtype,
       device,
       progress_callback: p=>{
         const pct = progressPercent(p);
         if(pct !== null){
           localModelDownloadObserved = true;
-          setSmartStatus(`Downloading ${modelInfo.label} (${modelInfo.approxDownload}, one time)… ${pct}%`);
+          setSmartStatus(`Downloading ${modelInfo.label} · ${dtype} (one time)… ${pct}%`);
         }else if(p && p.status === 'initiate'){
-          setSmartStatus(`Loading ${modelInfo.label} files…`);
+          setSmartStatus(`Loading ${modelInfo.label} · ${dtype} files…`);
         }else if(p && p.status === 'ready'){
           setSmartStatus(`${modelInfo.label} ready`);
         }
       }
-    });
+    };
+    if(device === 'wasm'){
+      // Disable the CPU memory arena and memory-pattern preallocation to
+      // reduce peak WASM heap during session creation — the point where
+      // mobile Safari throws RangeError: Out of memory.
+      options.session_options = { enableCpuMemArena:false, enableMemPattern:false };
+    }
+    return T.pipeline('text-generation', modelInfo.id, options);
   }
 
   async function getLocalTextGenerator(){
@@ -1244,7 +1267,7 @@
             // the key: if q4 exhausts memory, the larger q8 would too.)
             setPendingAttempt(comboKey);
             let generator = null, lastDtypeError = null;
-            for(const dtype of (modelInfo.dtypes || ['q4'])){
+            for(const dtype of dtypeLadder(device)){
               try{
                 generator = await loadPipelineCandidate(T, modelInfo, device, dtype);
                 break;
