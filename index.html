@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
-<!-- Local AI engine upgrade: 2026-07-12 r4 — single-threaded WASM for non-isolated contexts (webview/GitHub Pages session-init fix), tappable on-device diagnostics on the engine label -->
+<!-- build r5-2026-07-12 -->
+<!-- Local AI engine upgrade: 2026-07-12 r5 — visible build rev in diagnostics, dtype q4→q8 fallback for smallest model, service worker stale-build detection -->
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -930,11 +931,14 @@
      - Only successful local-AI analyses are cached; failures retry on the
        next Convert press.
   ------------------------------------------------------------------ */
+  const APP_REV = 'r5-2026-07-12';
   const TRANSFORMERS_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0';
   const LOCAL_MODEL_CANDIDATES = [
-    { id:'onnx-community/Qwen2.5-0.5B-Instruct', label:'Qwen2.5 0.5B Instruct', approxDownload:'≈350 MB', heavy:true },
-    { id:'HuggingFaceTB/SmolLM2-360M-Instruct',  label:'SmolLM2 360M Instruct', approxDownload:'≈250 MB', heavy:false },
-    { id:'HuggingFaceTB/SmolLM2-135M-Instruct',  label:'SmolLM2 135M Instruct', approxDownload:'≈100 MB', heavy:false }
+    // dtypes are tried in order: q4 is smallest; q8 avoids 4-bit matmul ops
+    // in case a given WASM build rejects them during session creation.
+    { id:'onnx-community/Qwen2.5-0.5B-Instruct', label:'Qwen2.5 0.5B Instruct', approxDownload:'≈350 MB', heavy:true,  dtypes:['q4'] },
+    { id:'HuggingFaceTB/SmolLM2-360M-Instruct',  label:'SmolLM2 360M Instruct', approxDownload:'≈250 MB', heavy:false, dtypes:['q4'] },
+    { id:'HuggingFaceTB/SmolLM2-135M-Instruct',  label:'SmolLM2 135M Instruct', approxDownload:'≈100 MB', heavy:false, dtypes:['q4','q8'] }
   ];
   const VALID_TASK_TYPES = new Set(['software','research','design','writing','data','planning','general']);
   let localTextGenerator = null;
@@ -1030,18 +1034,40 @@
     try{ return JSON.parse(localStorage.getItem(LAST_ERROR_KEY) || 'null'); }catch{ return null; }
   }
 
+  let swRegistrationCount = 'unknown';
   function environmentSnapshot(){
     const parts = [
+      `rev:${APP_REV}`,
       `isolated:${!!globalThis.crossOriginIsolated}`,
       `wasm:${typeof WebAssembly !== 'undefined'}`,
       `gpuAPI:${!!(navigator && navigator.gpu)}`,
       `gpuBroken:${webgpuRuntimeBroken}`,
       `touchApple:${isAppleTouchDevice()}`,
+      `serviceWorkers:${swRegistrationCount}`,
       `blocked:[${readBlockedCombos().join(', ') || 'none'}]`,
       `model:${activeLocalModelId()}`
     ];
     return parts.join(' · ');
   }
+
+  // A previously-deployed service worker can keep serving a stale build of
+  // this page even after new versions are pushed. Surface any registrations
+  // and nudge them to update so fixes actually reach the device.
+  (async()=>{
+    try{
+      if('serviceWorker' in navigator){
+        const regs = await navigator.serviceWorker.getRegistrations();
+        swRegistrationCount = String(regs.length);
+        regs.forEach(reg=>{ try{ reg.update(); }catch{} });
+        if(regs.length){
+          console.warn(`[WhatsUpDocMD ${APP_REV}] ${regs.length} service worker registration(s) control this origin — if fixes seem missing, they may be serving a cached build.`);
+        }
+      }else{
+        swRegistrationCount = 'unsupported';
+      }
+    }catch{ swRegistrationCount = 'error'; }
+    console.info(`[WhatsUpDocMD] running build ${APP_REV}`);
+  })();
 
   function wireDiagnosticsLabel(){
     const label = $('engineLabel');
@@ -1160,10 +1186,10 @@
       : LOCAL_MODEL_CANDIDATES;
   }
 
-  async function loadPipelineCandidate(T, modelInfo, device){
+  async function loadPipelineCandidate(T, modelInfo, device, dtype){
     localModelDownloadObserved = false;
     return T.pipeline('text-generation', modelInfo.id, {
-      dtype: 'q4',
+      dtype,
       device,
       progress_callback: p=>{
         const pct = progressPercent(p);
@@ -1214,9 +1240,20 @@
           }
           try{
             // Record the attempt so a memory-kill reload can identify and
-            // blocklist this combination on the next boot.
+            // blocklist this combination on the next boot. (dtype is not in
+            // the key: if q4 exhausts memory, the larger q8 would too.)
             setPendingAttempt(comboKey);
-            const generator = await loadPipelineCandidate(T, modelInfo, device);
+            let generator = null, lastDtypeError = null;
+            for(const dtype of (modelInfo.dtypes || ['q4'])){
+              try{
+                generator = await loadPipelineCandidate(T, modelInfo, device, dtype);
+                break;
+              }catch(dtypeErr){
+                lastDtypeError = dtypeErr;
+                if(isWebGPURuntimeFailure(dtypeErr, device)) break; // no point retrying dtypes on a broken GPU stack
+              }
+            }
+            if(!generator) throw lastDtypeError || new Error('No dtype variant could initialize.');
             clearPendingAttempt();
             activeLocalModel = modelInfo;
             activeLocalDevice = device;
