@@ -167,8 +167,9 @@
     padding-right:calc(20px + env(safe-area-inset-right, 0px));
     display:flex;flex-direction:column;gap:12px;
   }
+  .convertRow{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
   .convert{
-    align-self:center;appearance:none;border:1px solid var(--accent-line);border-radius:999px;
+    appearance:none;border:1px solid var(--accent-line);border-radius:999px;
     background:var(--accent-soft);color:var(--accent);
     font:600 14px 'Inter',sans-serif;letter-spacing:.02em;
     padding:12px 34px;cursor:pointer;transition:transform .15s,box-shadow .2s;
@@ -191,7 +192,8 @@
       padding-left:calc(12px + env(safe-area-inset-left, 0px));
       padding-right:calc(12px + env(safe-area-inset-right, 0px));
       padding-bottom:calc(14px + env(safe-area-inset-bottom, 0px));}
-    .convert{align-self:stretch;padding:13px 10px}
+    .convertRow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .convert{padding:13px 6px;font-size:13px;white-space:nowrap}
     /* 3-column grid: all six share buttons always fit the viewport */
     .share{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
     .share button{padding:10px 4px;font-size:11.5px}
@@ -317,7 +319,10 @@
 </main>
 
 <div class="actions">
-  <button class="convert" id="convert">Convert to .md prompt</button>
+  <div class="convertRow">
+    <button class="convert" id="convert">Convert to .md prompt</button>
+    <button class="convert" id="convertLoop">Convert to .md Loop</button>
+  </div>
   <div class="share" aria-label="Share options">
     <button id="shCopy"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy</button>
     <button id="shEmail"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>Email</button>
@@ -370,8 +375,8 @@
     $('btnGPT').classList.toggle('active', m==='gpt');
     $('btnClaude').setAttribute('aria-selected', m==='claude');
     $('btnGPT').setAttribute('aria-selected', m==='gpt');
-    $('outLabel').textContent = m==='claude' ? 'prompt.claude.md' : 'prompt.gpt.md';
-    if(rawMD.trim()) convert(); // live re-convert on switch
+    if(rawMD.trim()) convert(); // live re-convert on switch (keeps last mode)
+    else $('outLabel').textContent = m==='claude' ? 'prompt.claude.md' : 'prompt.gpt.md';
   }
   $('btnClaude').onclick = ()=>setModel('claude');
   $('btnGPT').onclick = ()=>setModel('gpt');
@@ -518,17 +523,109 @@ ${text.trim()}
 - Keep the answer as concise as accuracy allows.`;
   }
 
+  /* ---------------- agentic loop conversion (LOOP-Template) ---------------- */
+  function buildLoop(text, m){
+    const title = firstLine(text);
+    const agentName = m==='claude' ? 'Claude Code' : 'Codex';
+    const task = m==='claude'
+      ? `<task>\n${text.trim()}\n</task>`
+      : `## Task\n${text.trim()}`;
+    return `# Agentic Loop — ${title}
+
+## Role
+You are the ${agentName} agent responsible for completing the task below.
+Your goal is to fully satisfy the request as described. Use the task text as the source of truth.
+
+Operate autonomously through an agentic loop:
+**UNDERSTAND → INSPECT → PLAN → ACT → RUN → OBSERVE → COMPARE → CORRECT → REPEAT**
+
+Do not stop after the first attempt. Continue until the completion criteria are satisfied or a defined stopping condition is reached.
+
+${task}
+
+---
+
+## 1. Understand the Task
+Before changing anything:
+1. Read the complete request.
+2. Identify the desired outcome and explicit requirements.
+3. Identify implied requirements that can reasonably be inferred.
+4. Identify available references and sources of truth.
+5. Identify constraints, risks, and dependencies.
+6. Separate required work from optional improvements.
+
+Create an internal task map: primary objective, required deliverables, functional requirements, visual/behavioral requirements, technical constraints, validation requirements, completion criteria. Do not begin implementation until the task is sufficiently understood.
+
+## 2. Inspect the Existing Environment
+Before making changes: list directories and files; search for relevant names, routes, components, functions, schemas, or text; read configuration files; identify frameworks, dependencies, and reusable components; locate existing tests; determine build, lint, test, and run commands; identify project conventions. Do not duplicate existing functionality when a suitable implementation already exists.
+
+## 3. Establish a Baseline
+Install dependencies if needed, then run the existing build, type checking, linting, and tests. Launch the application or relevant environment. Record any pre-existing errors and keep them separate from issues introduced by the new work.
+
+## 4. Create an Implementation Plan
+Break the task into small, verifiable work units, each with a Goal, Files likely involved, and Validation method. Implement one meaningful work unit at a time. Prioritize: correct behavior → required functionality → structure/layout → error handling → tests → visual accuracy → performance → minor polish. Do not polish details while major requirements remain incomplete.
+
+## 5. Execute the Agentic Loop
+For every work unit, repeat:
+- **Inspect** — read the relevant code, files, logs, or references; determine the smallest effective change.
+- **Plan** — choose the next concrete action. Prefer small, reversible changes, existing project patterns, minimal dependencies, and clear validation.
+- **Act** — perform the action (edit/create files, update schemas, modify routes, add validation, run commands).
+- **Run** — run the most relevant validation after each meaningful change (tests, type check, lint, build, preview, API request).
+- **Observe** — read the complete result: errors, warnings, failed tests, runtime behavior, unexpected side effects. Do not assume the change worked.
+- **Compare** — compare against the original request, the source of truth, project conventions, and completion criteria. Identify the largest remaining discrepancy.
+- **Correct** — trace the discrepancy to its cause, make the smallest effective correction, rerun validation, and continue the loop. Do not merely report a failure that can reasonably be fixed.
+
+## 6. Failure-Handling Rules
+When a command or test fails: read the complete error output; determine whether the failure is introduced, pre-existing, environmental, missing-data, or a wrong assumption; trace it to its source; correct the source, not the symptom; rerun the failed validation and related validations.
+Do not: disable tests to make them pass, delete assertions without justification, suppress errors without understanding them, replace real behavior with hardcoded success, claim success without rerunning validation, or ignore warnings that indicate real problems.
+
+## 7. Decision Rules
+Make reasonable implementation decisions independently when they can be inferred from existing patterns, the supplied reference, conventions, adjacent components, tests, documentation, or stated intent.
+Ask for user input only when blocked by: missing credentials, missing required assets, an irreversible destructive action, conflicting requirements, a product decision with materially different outcomes, or information that cannot reasonably be inferred. Do not ask for confirmation between normal development steps.
+
+## 8. Engineering Standards
+Preserve existing architecture and conventions; reuse appropriate components; avoid unnecessary dependencies and unrelated refactoring; keep changes focused, readable, and maintainable; add error handling and tests for important behavior; preserve backward compatibility where required; never expose secrets; validate inputs and outputs; document non-obvious decisions.
+
+## 9. Completion Criteria
+Continue the loop until all applicable criteria are true:
+- Every requirement stated in the task is implemented and works correctly
+- Required files or deliverables exist
+- No new runtime errors; type checking, linting, tests, and build all pass
+- The application launches successfully and the result matches the source of truth
+- Important edge cases have been tested
+- Known differences are documented honestly
+
+Do not declare completion until the criteria have been verified.
+
+## 10. Stopping Conditions
+Stop only on: **successful completion** (all criteria verified), a **genuine blocker** (report what is blocked, why, what was completed, what is required, and the safest next action), or a **safety/scope boundary** (unauthorized destructive changes, exposed secrets, exceeded scope, or fabricated results).
+
+## 11. Final Validation & Report
+Before reporting completion: review the original request and every criterion; run the final test suite, type check, lint, and build; launch/preview the result; review the final diff for unintended changes, leftover debug code, or committed secrets. If any validation fails, return to the loop.
+Then report: **Summary**, **Work Completed**, **Files Created/Modified**, **Validation Performed** (command → result), **Final Status**, **Known Differences or Limitations**, and one **Recommended Next Step**. Do not claim completion, parity, or successful validation unless it was actually verified.`;
+  }
+
   let rawMD = '';           // source of truth for the converted prompt
   let viewMode = 'raw';     // 'raw' | 'preview'
+  let convMode = 'prompt';  // 'prompt' | 'loop' — last conversion type
 
-  function convert(){
+  function convert(mode){
+    if(mode) convMode = mode;
     const text = input.value;
     if(!text.trim()){ say('Add some text first'); input.focus(); return; }
-    rawMD = model==='claude' ? buildClaude(text) : buildGPT(text);
+    rawMD = convMode==='loop'
+      ? buildLoop(text, model)
+      : (model==='claude' ? buildClaude(text) : buildGPT(text));
+    updateOutLabel();
     renderOutput();
     $('outCount').textContent = rawMD.length + ' chars';
   }
-  $('convert').onclick = convert;
+  function updateOutLabel(){
+    const kind = convMode==='loop' ? 'loop' : 'prompt';
+    $('outLabel').textContent = `${kind}.${model==='claude'?'claude':'gpt'}.md`;
+  }
+  $('convert').onclick = ()=>convert('prompt');
+  $('convertLoop').onclick = ()=>convert('loop');
 
   /* ---------------- view mode: Raw / Preview ---------------- */
   function renderOutput(){
@@ -670,7 +767,7 @@ ${text.trim()}
     if(!t){ say('Convert your text first'); return null; }
     return t;
   }
-  const fileName = () => model==='claude' ? 'prompt.claude.md' : 'prompt.gpt.md';
+  const fileName = () => (convMode==='loop' ? 'loop.' : 'prompt.') + (model==='claude' ? 'claude.md' : 'gpt.md');
 
   $('shCopy').onclick = async ()=>{
     const t = getMD(); if(!t) return;
