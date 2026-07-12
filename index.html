@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
-<!-- build r7-2026-07-12 -->
-<!-- Local AI engine upgrade: 2026-07-12 r7 — runtime version ladder (v4.2.0 → v3.8.1) for ORT WASM instantiation failures, error detail auto-shown in fallback status -->
+<!-- build r7.1-2026-07-12 -->
+<!-- Local AI engine upgrade: 2026-07-12 r7.1 — browser + WASM caching explicitly enabled, persistent-storage request added, and visible local-AI loading/download progress -->
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -117,6 +117,37 @@
   }
   .smart-status strong{color:var(--accent);font-weight:600;white-space:nowrap}
   .smart-status span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}
+  /* ---------- local AI loading / download indicator ---------- */
+  .ai-progress[hidden]{display:none}
+  .ai-progress{
+    display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:start;
+    padding:10px 12px;border-bottom:1px solid var(--border);
+    background:linear-gradient(90deg,var(--accent-soft),rgba(11,9,16,.42));
+    color:var(--muted);font-size:11px;
+  }
+  .ai-progress-spinner{
+    width:16px;height:16px;margin-top:2px;border-radius:50%;
+    border:2px solid var(--border);border-top-color:var(--accent);
+    animation:aiSpin .8s linear infinite;flex:none;
+  }
+  .ai-progress-content{min-width:0}
+  .ai-progress-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .ai-progress-head strong{color:var(--accent);font-weight:600}
+  .ai-progress-percent{color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ai-progress-track{
+    position:relative;height:5px;margin:6px 0 5px;border-radius:999px;overflow:hidden;
+    background:rgba(255,255,255,.06);box-shadow:inset 0 0 0 1px rgba(255,255,255,.025);
+  }
+  .ai-progress-fill{
+    display:block;height:100%;width:0;border-radius:inherit;background:var(--accent);
+    transition:width .18s ease;
+  }
+  .ai-progress.indeterminate .ai-progress-fill{
+    width:38%;animation:aiIndeterminate 1.15s ease-in-out infinite;
+  }
+  .ai-progress-detail{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint)}
+  @keyframes aiSpin{to{transform:rotate(360deg)}}
+  @keyframes aiIndeterminate{0%{transform:translateX(-120%)}50%{transform:translateX(115%)}100%{transform:translateX(285%)}}
   .pane.dragover{border-color:var(--accent-line);box-shadow:inset 0 0 0 1px var(--accent-line),0 0 28px -18px var(--accent)}
   .pane.dragover textarea{background:var(--accent-soft)}
   @media (max-width:600px){
@@ -124,6 +155,7 @@
     .file-meta{max-width:105px}
     .smart-status{align-items:flex-start}
     .smart-status span:last-child{white-space:normal;text-align:left}
+    .ai-progress-detail{white-space:normal}
   }
   /* ---------- toolbar ---------- */
   .toolbar{
@@ -385,6 +417,17 @@
     <div class="smart-status" aria-live="polite">
       <strong id="engineLabel" style="cursor:pointer" title="Tap to view local AI diagnostics">Hybrid local AI engine</strong>
       <span id="smartSummary">Waiting for text or a document</span>
+    </div>
+    <div id="aiProgress" class="ai-progress indeterminate" hidden role="status" aria-live="polite" aria-atomic="true">
+      <span class="ai-progress-spinner" aria-hidden="true"></span>
+      <div class="ai-progress-content">
+        <div class="ai-progress-head">
+          <strong id="aiProgressTitle">Preparing local AI</strong>
+          <span id="aiProgressPercent" class="ai-progress-percent"></span>
+        </div>
+        <div class="ai-progress-track" aria-hidden="true"><span id="aiProgressFill" class="ai-progress-fill"></span></div>
+        <span id="aiProgressDetail" class="ai-progress-detail">Checking the browser cache…</span>
+      </div>
     </div>
     <textarea id="input" placeholder="Paste, type, drop, or upload TXT, RTF, DOC, MD, or PDF. WhatsUpDocMD will infer the intended goals and structure the result into a ready-to-use prompt or agentic loop." spellcheck="true"></textarea>
   </section>
@@ -1070,6 +1113,8 @@
       `gpuBroken:${webgpuRuntimeBroken}`,
       `touchApple:${isAppleTouchDevice()}`,
       `serviceWorkers:${swRegistrationCount}`,
+      `cacheAPI:${typeof caches !== 'undefined'}`,
+      `modelStorage:${modelStorageMode}`,
       `blocked:[${readBlockedCombos().join(', ') || 'none'}]`,
       `runtime:${activeRuntimeLabel}`,
       `model:${activeLocalModelId()}`
@@ -1118,9 +1163,88 @@
     $('smartSummary').textContent = message;
   }
 
+  /* Visible, accessible local-AI activity indicator. It handles both
+     determinate model downloads and indeterminate cache checks, runtime
+     initialization, and inference. */
+  let aiProgressHideTimer = null;
+  let storagePersistencePromise = null;
+  let modelStorageMode = 'browser-managed';
+
+  function clampPercent(value){
+    return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+  }
+
+  function setAIProgress(title, detail='', percent=null){
+    const panel = $('aiProgress');
+    if(!panel) return;
+    clearTimeout(aiProgressHideTimer);
+    const determinate = Number.isFinite(percent);
+    panel.hidden = false;
+    panel.classList.toggle('indeterminate', !determinate);
+    $('aiProgressTitle').textContent = title || 'Local AI in progress';
+    $('aiProgressDetail').textContent = detail || '';
+    $('aiProgressPercent').textContent = determinate ? `${clampPercent(percent)}%` : '';
+    $('aiProgressFill').style.width = determinate ? `${clampPercent(percent)}%` : '38%';
+    panel.setAttribute('aria-label', [title, detail, determinate ? `${clampPercent(percent)} percent` : 'in progress'].filter(Boolean).join('. '));
+  }
+
+  function hideAIProgress(delay=0){
+    const panel = $('aiProgress');
+    if(!panel) return;
+    clearTimeout(aiProgressHideTimer);
+    aiProgressHideTimer = setTimeout(()=>{
+      panel.hidden = true;
+      panel.classList.add('indeterminate');
+      $('aiProgressPercent').textContent = '';
+      $('aiProgressFill').style.width = '38%';
+    }, Math.max(0, delay));
+  }
+
+  function finishAIProgress(title, detail){
+    setAIProgress(title, detail, 100);
+    hideAIProgress(1400);
+  }
+
+  function progressFileLabel(p){
+    const raw = p && (p.file || p.name) ? String(p.file || p.name) : '';
+    if(!raw) return '';
+    const parts = raw.split('/');
+    const name = parts[parts.length - 1] || raw;
+    return name.length > 64 ? name.slice(0,61) + '…' : name;
+  }
+
   function progressPercent(p){
-    if(!p || p.status !== 'progress' || !p.total) return null;
-    return Math.max(0, Math.min(100, Math.round((p.loaded / p.total) * 100)));
+    if(!p) return null;
+    if(Number.isFinite(Number(p.progress))) return clampPercent(Number(p.progress));
+    if(Number(p.total) > 0 && Number.isFinite(Number(p.loaded))){
+      return clampPercent((Number(p.loaded) / Number(p.total)) * 100);
+    }
+    return null;
+  }
+
+  async function requestPersistentModelStorage(){
+    if(storagePersistencePromise) return storagePersistencePromise;
+    storagePersistencePromise = (async()=>{
+      try{
+        if(!navigator.storage || typeof navigator.storage.persist !== 'function'){
+          modelStorageMode = 'browser-managed';
+          return modelStorageMode;
+        }
+        const alreadyPersistent = typeof navigator.storage.persisted === 'function'
+          ? await navigator.storage.persisted()
+          : false;
+        if(alreadyPersistent){
+          modelStorageMode = 'persistent';
+          return modelStorageMode;
+        }
+        modelStorageMode = (await navigator.storage.persist()) ? 'persistent' : 'browser-managed';
+        return modelStorageMode;
+      }catch{
+        modelStorageMode = 'browser-managed';
+        return modelStorageMode;
+      }
+    })();
+    return storagePersistencePromise;
   }
 
   function errorMessage(err){
@@ -1220,14 +1344,25 @@
       dtype,
       device,
       progress_callback: p=>{
+        const status = p && p.status ? p.status : '';
         const pct = progressPercent(p);
-        if(pct !== null){
+        const file = progressFileLabel(p);
+        if(status === 'download'){
           localModelDownloadObserved = true;
-          setSmartStatus(`Downloading ${modelInfo.label} · ${dtype} (one time)… ${pct}%`);
-        }else if(p && p.status === 'initiate'){
-          setSmartStatus(`Loading ${modelInfo.label} · ${dtype} files…`);
-        }else if(p && p.status === 'ready'){
+          setSmartStatus(`Downloading ${modelInfo.label} · ${dtype} (one time)…`);
+          setAIProgress('Downloading local AI model', `${modelInfo.label} · ${dtype}${file ? ` · ${file}` : ''}`, pct);
+        }else if(status === 'progress_total' || status === 'progress'){
+          const title = localModelDownloadObserved ? 'Downloading local AI model' : 'Loading cached local AI model';
+          setSmartStatus(`${title} · ${modelInfo.label}${pct !== null ? ` · ${pct}%` : ''}`);
+          setAIProgress(title, `${modelInfo.label} · ${dtype}${file ? ` · ${file}` : ''}`, pct);
+        }else if(status === 'initiate'){
+          setSmartStatus(`Checking ${modelInfo.label} · ${dtype} files…`);
+          setAIProgress('Checking model files', `${modelInfo.label} · ${dtype}${file ? ` · ${file}` : ''}`);
+        }else if(status === 'done'){
+          setAIProgress('Preparing local AI model', `${modelInfo.label} · verifying ${file || 'downloaded files'}`);
+        }else if(status === 'ready'){
           setSmartStatus(`${modelInfo.label} ready`);
+          setAIProgress('Initializing local AI model', `${modelInfo.label} · ${device}`);
         }
       }
     };
@@ -1271,9 +1406,14 @@
           activeLocalDevice = device;
           activeRuntimeLabel = runtime.label;
           localTextGenerator = generator;
+          const cacheAvailable = typeof caches !== 'undefined';
+          const cacheDetail = cacheAvailable
+            ? (localModelDownloadObserved ? 'Saved in browser cache for later visits' : 'Loaded from browser cache')
+            : 'Browser Cache API unavailable; reuse depends on normal HTTP caching';
           setSmartStatus(localModelDownloadObserved
-            ? `${modelInfo.label} downloaded and ready (${device} · ${runtime.label})`
+            ? `${modelInfo.label} downloaded, cached, and ready (${device} · ${runtime.label})`
             : `${modelInfo.label} loaded from browser cache (${device} · ${runtime.label})`);
+          finishAIProgress('Local AI model ready', `${cacheDetail} · ${modelStorageMode === 'persistent' ? 'persistent storage granted' : 'browser-managed storage'}`);
           return generator;
         }catch(err){
           clearPendingAttempt();
@@ -1298,18 +1438,26 @@
 
     localModelPromise = (async()=>{
       setSmartStatus('Checking the browser cache for the local language model…');
+      setAIProgress('Preparing local AI', 'Checking the browser cache and storage availability…');
+      // This is best-effort. Supporting browsers may grant persistence so
+      // cached model files are less likely to be evicted under storage pressure.
+      await requestPersistentModelStorage();
       const attempts = [];
 
       for(const runtime of TRANSFORMERS_MODULE_URLS){
         let T = null;
         try{
+          setAIProgress('Loading local AI runtime', `${runtime.label} · checking browser cache`);
           T = await getTransformersModule(runtime);
         }catch(moduleErr){
           attempts.push(`[${runtime.label}] runtime module: ${errorMessage(moduleErr)}`);
           continue;
         }
         T.env.allowLocalModels = false;
+        // Transformers.js stores model/tokenizer/config files in the browser
+        // Cache API. Newer runtimes can also cache ONNX Runtime WASM assets.
         T.env.useBrowserCache = true;
+        try{ if('useWasmCache' in T.env) T.env.useWasmCache = true; }catch{}
         // Keep ONNX Runtime on the main thread. In WebKit webviews, proxying
         // session setup to a worker triggers "DataCloneError: The object can
         // not be cloned" because GPU/runtime objects aren't structured-cloneable.
@@ -1579,6 +1727,7 @@ ${source}` }
       const generator = await getLocalTextGenerator();
       const source = compactSourceForModel(raw, rules);
       setSmartStatus('Local AI is deriving goals, constraints, and success criteria…');
+      setAIProgress('Analyzing your request', `${activeLocalModel.label} is deriving goals, constraints, and success criteria…`);
 
       const result = await runLocalGeneration(generator, localAnalysisMessages(source), {
         max_new_tokens: 512,
@@ -1600,6 +1749,7 @@ ${source}` }
         // The model is available; only its output failed. Give it one
         // simpler repair pass before using the deterministic fallback.
         setSmartStatus('Local AI is repairing its structured response…');
+        setAIProgress('Repairing local AI response', 'The model completed inference; its structured output is being repaired locally…');
         const repairResult = await runLocalGeneration(generator, localRepairMessages(source), {
           max_new_tokens: 400,
           do_sample: false,
@@ -1627,8 +1777,10 @@ ${source}` }
 
       const merged = mergeAnalyses(modelAnalysis, rules);
       smartAnalysisCache = {text:raw, analysis:merged};
+      finishAIProgress('Local AI analysis complete', `${activeLocalModel.label} · ${activeLocalDevice} · processed privately on this device`);
       return merged;
     }catch(err){
+      hideAIProgress();
       const stage = err && err.stage ? err.stage : 'unknown';
       const fallback = {
         ...rules,
@@ -2180,6 +2332,7 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
     converting = busy;
     $('convert').disabled = busy;
     $('convertLoop').disabled = busy;
+    $('inputPane').setAttribute('aria-busy', busy ? 'true' : 'false');
   }
 
   function showAnalysisSummary(a){
@@ -2222,6 +2375,7 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
         say(convMode === 'loop' ? 'Agentic Loop generated with local AI' : 'Prompt generated with local AI');
       }
     }catch(err){
+      hideAIProgress();
       setSmartStatus('Could not process this request');
       say(err && err.message ? err.message : 'Conversion failed');
     }finally{
