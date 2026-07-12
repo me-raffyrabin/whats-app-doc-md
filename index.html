@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
-<!-- build r7.2-2026-07-12 -->
-<!-- Local AI engine upgrade: 2026-07-12 r7.2 — iPhone/iPad memory-safe model selection, browser caching retained, crash-loop prevention strengthened, and local-AI progress clarified -->
+<!-- build r7.3-2026-07-12 -->
+<!-- Local AI engine upgrade: 2026-07-12 r7.3 — iPhone/iPad inference moved off the UI thread, cancellable background processing added, one-pass mobile output enabled, and worker memory cleanup added -->
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -133,7 +133,15 @@
   .ai-progress-content{min-width:0}
   .ai-progress-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
   .ai-progress-head strong{color:var(--accent);font-weight:600}
+  .ai-progress-actions{display:flex;align-items:center;gap:8px;flex:none}
   .ai-progress-percent{color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ai-progress-cancel{
+    appearance:none;border:1px solid var(--accent-line);border-radius:999px;background:rgba(11,9,16,.5);
+    color:var(--accent);font:600 10px/1 'Inter',sans-serif;padding:6px 9px;cursor:pointer;
+    -webkit-tap-highlight-color:transparent;touch-action:manipulation;
+  }
+  .ai-progress-cancel[hidden]{display:none}
+  .ai-progress-cancel:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .ai-progress-track{
     position:relative;height:5px;margin:6px 0 5px;border-radius:999px;overflow:hidden;
     background:rgba(255,255,255,.06);box-shadow:inset 0 0 0 1px rgba(255,255,255,.025);
@@ -423,7 +431,10 @@
       <div class="ai-progress-content">
         <div class="ai-progress-head">
           <strong id="aiProgressTitle">Preparing local AI</strong>
-          <span id="aiProgressPercent" class="ai-progress-percent"></span>
+          <div class="ai-progress-actions">
+            <span id="aiProgressPercent" class="ai-progress-percent"></span>
+            <button id="aiProgressCancel" class="ai-progress-cancel" type="button" hidden>Cancel</button>
+          </div>
         </div>
         <div class="ai-progress-track" aria-hidden="true"><span id="aiProgressFill" class="ai-progress-fill"></span></div>
         <span id="aiProgressDetail" class="ai-progress-detail">Checking the browser cache…</span>
@@ -974,7 +985,7 @@
      - Only successful local-AI analyses are cached; failures retry on the
        next Convert press.
   ------------------------------------------------------------------ */
-  const APP_REV = 'r7.2-2026-07-12';
+  const APP_REV = 'r7.3-2026-07-12';
   /* Runtime ladder: if every model/device/dtype combination fails at session
      creation under one Transformers.js runtime, the ONNX Runtime WASM binary
      bundled with that release may simply not instantiate on this browser
@@ -1202,6 +1213,8 @@
       panel.classList.add('indeterminate');
       $('aiProgressPercent').textContent = '';
       $('aiProgressFill').style.width = '38%';
+      const cancel = $('aiProgressCancel');
+      if(cancel) cancel.hidden = true;
     }, Math.max(0, delay));
   }
 
@@ -1271,7 +1284,9 @@
       'model-load':'The local language model could not initialize',
       'inference':'The local language model could not complete inference',
       'empty-response':'The local language model returned an empty response',
-      'response-parse':'The local AI response could not be structured'
+      'response-parse':'The local AI response could not be structured',
+      'worker-unavailable':'Background local AI is unavailable',
+      'cancelled':'Local AI was cancelled'
     }[stage] || 'Local AI processing failed';
   }
 
@@ -1293,6 +1308,311 @@
     });
     return transformersModulePromises[runtime.url];
   }
+
+  /* ---- iPhone/iPad background inference worker ----
+     Transformers.js generation on the page's main JavaScript thread can make
+     Mobile Safari appear completely frozen. Apple touch devices therefore run
+     model loading and generation inside a dedicated Worker. The model files
+     still use Transformers.js browser caching, while the UI thread remains
+     free for scrolling, Cancel, and every normal control. */
+  let appleAIWorker = null;
+  let appleAIWorkerURL = '';
+  let appleAIWorkerRequestId = 0;
+  let activeAppleJobId = null;
+  let appleAIWorkerIdleTimer = null;
+  const appleAIWorkerJobs = new Map();
+  const APPLE_AI_TIMEOUT_MS = 90000;
+  const APPLE_AI_IDLE_SHUTDOWN_MS = 120000;
+
+  function appleWorkerBootstrap(){
+    const RUNTIMES = [
+      {url:'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0', label:'v4.2.0'},
+      {url:'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1', label:'v3.8.1'}
+    ];
+    const MODEL = {id:'HuggingFaceTB/SmolLM2-135M-Instruct', label:'SmolLM2 135M Instruct'};
+    const DTYPES = ['q8','int8','q4'];
+    let generator = null;
+    let generatorPromise = null;
+    let activeRuntime = '';
+    let activeDtype = '';
+    let lastProgressAt = 0;
+    let lastProgressPercent = -1;
+
+    const errorText = err => err && err.message ? String(err.message) : String(err || 'Unknown worker error');
+    const send = (type, data={}) => self.postMessage({type, ...data});
+
+    function safeProgress(p){
+      const total = Number(p && p.total);
+      const loaded = Number(p && p.loaded);
+      const direct = Number(p && p.progress);
+      let percent = null;
+      if(Number.isFinite(direct)) percent = Math.max(0, Math.min(100, Math.round(direct)));
+      else if(total > 0 && Number.isFinite(loaded)) percent = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+      const now = Date.now();
+      if(now - lastProgressAt < 140 && percent === lastProgressPercent) return;
+      lastProgressAt = now;
+      lastProgressPercent = percent;
+      const rawFile = p && (p.file || p.name) ? String(p.file || p.name) : '';
+      const parts = rawFile.split('/');
+      const file = parts[parts.length - 1] || rawFile;
+      send('progress', {
+        status: p && p.status ? String(p.status) : '',
+        percent,
+        file: file.slice(0, 80),
+        modelLabel: MODEL.label,
+        dtype: activeDtype
+      });
+    }
+
+    async function disposeGenerator(){
+      const current = generator;
+      generator = null;
+      generatorPromise = null;
+      try{
+        if(current && typeof current.dispose === 'function') await current.dispose();
+      }catch{}
+    }
+
+    async function getGenerator(){
+      if(generator) return generator;
+      if(generatorPromise) return generatorPromise;
+      generatorPromise = (async()=>{
+        const attempts = [];
+        for(const runtime of RUNTIMES){
+          let T;
+          try{
+            send('phase', {title:'Loading local AI runtime', detail:`${runtime.label} · checking browser cache`});
+            T = await import(runtime.url);
+          }catch(err){
+            attempts.push(`[${runtime.label}] runtime: ${errorText(err)}`);
+            continue;
+          }
+          try{
+            T.env.allowLocalModels = false;
+            T.env.useBrowserCache = true;
+            try{ if('useWasmCache' in T.env) T.env.useWasmCache = true; }catch{}
+            try{
+              if(T.env.backends && T.env.backends.onnx && T.env.backends.onnx.wasm){
+                T.env.backends.onnx.wasm.proxy = false;
+                T.env.backends.onnx.wasm.numThreads = 1;
+              }
+            }catch{}
+          }catch{}
+
+          for(const dtype of DTYPES){
+            activeDtype = dtype;
+            try{
+              send('phase', {title:'Preparing local AI model', detail:`${MODEL.label} · ${dtype} · background worker`});
+              generator = await T.pipeline('text-generation', MODEL.id, {
+                dtype,
+                device:'wasm',
+                progress_callback:safeProgress,
+                session_options:{enableCpuMemArena:false, enableMemPattern:false}
+              });
+              activeRuntime = runtime.label;
+              send('ready', {modelLabel:MODEL.label, runtime:activeRuntime, dtype:activeDtype});
+              return generator;
+            }catch(err){
+              attempts.push(`[${runtime.label}] ${dtype}: ${errorText(err)}`);
+              generator = null;
+            }
+          }
+        }
+        throw new Error(attempts.join(' | ') || 'No background local AI model could initialize.');
+      })().catch(err=>{
+        generator = null;
+        generatorPromise = null;
+        throw err;
+      });
+      return generatorPromise;
+    }
+
+    function generatedText(result){
+      const value = result && result[0] ? result[0].generated_text : null;
+      if(typeof value === 'string') return value.replace(/<think>[\s\S]*?<\/think>/gi,'').trim();
+      if(Array.isArray(value)){
+        const last = value[value.length - 1];
+        return last && typeof last.content === 'string'
+          ? last.content.replace(/<think>[\s\S]*?<\/think>/gi,'').trim()
+          : '';
+      }
+      return '';
+    }
+
+    self.onmessage = async event=>{
+      const message = event.data || {};
+      if(message.type === 'dispose'){
+        await disposeGenerator();
+        send('disposed');
+        return;
+      }
+      if(message.type !== 'analyze') return;
+      const id = message.id;
+      try{
+        const pipe = await getGenerator();
+        send('phase', {id, title:'Analyzing in background', detail:'The page remains usable while the local model processes your request…'});
+        const result = await pipe(message.prompt, message.options || {});
+        send('result', {
+          id,
+          text:generatedText(result),
+          modelLabel:MODEL.label,
+          runtime:activeRuntime,
+          dtype:activeDtype
+        });
+      }catch(err){
+        send('error', {id, message:errorText(err)});
+      }
+    };
+  }
+
+  function showAppleCancel(show){
+    const button = $('aiProgressCancel');
+    if(button) button.hidden = !show;
+  }
+
+  function clearAppleWorkerIdleTimer(){
+    clearTimeout(appleAIWorkerIdleTimer);
+    appleAIWorkerIdleTimer = null;
+  }
+
+  function scheduleAppleWorkerIdleShutdown(){
+    clearAppleWorkerIdleTimer();
+    appleAIWorkerIdleTimer = setTimeout(()=>{
+      if(!appleAIWorker || activeAppleJobId) return;
+      try{ appleAIWorker.postMessage({type:'dispose'}); }catch{}
+      setTimeout(()=>terminateAppleAIWorker('idle cleanup', false), 1200);
+    }, APPLE_AI_IDLE_SHUTDOWN_MS);
+  }
+
+  function rejectAppleWorkerJobs(stage, message){
+    for(const [id, job] of appleAIWorkerJobs){
+      clearTimeout(job.timeout);
+      job.reject(createStageError(stage, new Error(message), message));
+      appleAIWorkerJobs.delete(id);
+    }
+    activeAppleJobId = null;
+    showAppleCancel(false);
+  }
+
+  function terminateAppleAIWorker(reason='Background local AI stopped.', rejectJobs=true){
+    clearAppleWorkerIdleTimer();
+    if(appleAIWorker){
+      try{ appleAIWorker.terminate(); }catch{}
+      appleAIWorker = null;
+    }
+    if(appleAIWorkerURL){
+      try{ URL.revokeObjectURL(appleAIWorkerURL); }catch{}
+      appleAIWorkerURL = '';
+    }
+    if(rejectJobs && appleAIWorkerJobs.size) rejectAppleWorkerJobs('cancelled', reason);
+  }
+
+  function createAppleAIWorker(){
+    if(appleAIWorker) return appleAIWorker;
+    if(typeof Worker === 'undefined' || typeof Blob === 'undefined' || typeof URL === 'undefined'){
+      throw createStageError('worker-unavailable', null, 'This browser cannot run local AI safely in the background.');
+    }
+    const source = `(${appleWorkerBootstrap.toString()})();`;
+    appleAIWorkerURL = URL.createObjectURL(new Blob([source], {type:'text/javascript'}));
+    const worker = new Worker(appleAIWorkerURL);
+    appleAIWorker = worker;
+
+    worker.onmessage = event=>{
+      const message = event.data || {};
+      if(message.type === 'phase'){
+        setSmartStatus(message.detail || message.title || 'Local AI is working in the background…');
+        setAIProgress(message.title || 'Local AI in progress', message.detail || 'Processing privately on this device…');
+        showAppleCancel(!!activeAppleJobId);
+        return;
+      }
+      if(message.type === 'progress'){
+        const downloading = message.status === 'download' || message.status === 'progress' || message.status === 'progress_total';
+        const title = downloading ? 'Loading local AI model' : 'Preparing local AI model';
+        const file = message.file ? ` · ${message.file}` : '';
+        const detail = `${message.modelLabel || 'SmolLM2 135M Instruct'}${message.dtype ? ` · ${message.dtype}` : ''}${file} · background worker`;
+        setSmartStatus(`${title}${Number.isFinite(message.percent) ? ` · ${message.percent}%` : ''}`);
+        setAIProgress(title, detail, Number.isFinite(message.percent) ? message.percent : null);
+        showAppleCancel(!!activeAppleJobId);
+        return;
+      }
+      if(message.type === 'ready'){
+        activeLocalModel = LOCAL_MODEL_CANDIDATES.find(m=>m.id === 'HuggingFaceTB/SmolLM2-135M-Instruct') || activeLocalModel;
+        activeLocalDevice = 'worker-wasm';
+        activeRuntimeLabel = message.runtime || activeRuntimeLabel;
+        setSmartStatus(`${message.modelLabel || activeLocalModel.label} loaded from browser cache and ready in the background`);
+        setAIProgress('Local AI model ready', `${message.modelLabel || activeLocalModel.label} · background worker · cached for later visits`, 100);
+        showAppleCancel(!!activeAppleJobId);
+        return;
+      }
+      if(message.type === 'disposed'){
+        terminateAppleAIWorker('Background local AI released.', false);
+        return;
+      }
+      if(message.type !== 'result' && message.type !== 'error') return;
+      const job = appleAIWorkerJobs.get(message.id);
+      if(!job) return;
+      clearTimeout(job.timeout);
+      appleAIWorkerJobs.delete(message.id);
+      if(activeAppleJobId === message.id) activeAppleJobId = null;
+      showAppleCancel(false);
+      scheduleAppleWorkerIdleShutdown();
+      if(message.type === 'result') job.resolve(message);
+      else job.reject(createStageError('inference', new Error(message.message || 'Background inference failed.'), 'The background local AI could not complete this request.'));
+    };
+
+    worker.onerror = event=>{
+      const detail = event && event.message ? event.message : 'Background local AI worker failed.';
+      rejectAppleWorkerJobs('inference', detail);
+      terminateAppleAIWorker(detail, false);
+    };
+    return worker;
+  }
+
+  function runAppleWorkerAnalysis(source){
+    clearAppleWorkerIdleTimer();
+    activeLocalModel = LOCAL_MODEL_CANDIDATES.find(m=>m.id === 'HuggingFaceTB/SmolLM2-135M-Instruct') || activeLocalModel;
+    activeLocalDevice = 'worker-wasm';
+    const worker = createAppleAIWorker();
+    const id = ++appleAIWorkerRequestId;
+    activeAppleJobId = id;
+    showAppleCancel(true);
+    setSmartStatus('Local AI is analyzing in the background — the page remains usable…');
+    setAIProgress('Analyzing in background', 'SmolLM2 135M Instruct is processing privately without blocking the page…');
+
+    return new Promise((resolve,reject)=>{
+      const timeout = setTimeout(()=>{
+        appleAIWorkerJobs.delete(id);
+        if(activeAppleJobId === id) activeAppleJobId = null;
+        showAppleCancel(false);
+        terminateAppleAIWorker('The background local AI took too long and was stopped.', false);
+        reject(createStageError('inference', new Error('Background local AI timeout'), 'The background local AI took too long and was stopped.'));
+      }, APPLE_AI_TIMEOUT_MS);
+      appleAIWorkerJobs.set(id, {resolve,reject,timeout});
+      try{
+        worker.postMessage({
+          type:'analyze',
+          id,
+          prompt:localMobileMessages(source),
+          options:{max_new_tokens:176, do_sample:false, repetition_penalty:1.03}
+        });
+      }catch(err){
+        clearTimeout(timeout);
+        appleAIWorkerJobs.delete(id);
+        activeAppleJobId = null;
+        showAppleCancel(false);
+        reject(createStageError('inference', err, 'The background local AI could not start.'));
+      }
+    });
+  }
+
+  function cancelAppleAIJob(){
+    if(!activeAppleJobId) return;
+    setSmartStatus('Stopping local AI and completing with the private rule engine…');
+    setAIProgress('Stopping local AI', 'The current background analysis is being cancelled…');
+    terminateAppleAIWorker('Local AI cancelled by the user.');
+  }
+
+  window.addEventListener('pagehide', ()=>terminateAppleAIWorker('Page closed.', false));
 
   /* WebKit webviews (in-app browsers, PWAs on some iOS builds) expose
      navigator.gpu without a working WebGPU stack. Symptoms include
@@ -1563,6 +1883,24 @@ ${source}` }
     ];
   }
 
+  function localMobileMessages(source){
+    return [
+      { role:'system', content:'Return only the requested labeled lines. No prose, markdown, JSON, or code fences.' },
+      { role:'user', content:`Summarize this request using these labels. Keep every value concise. Use || between multiple items. Omit nothing explicit.
+TASK_TYPE: software|research|design|writing|data|planning|general
+TITLE: short title
+PRIMARY_GOAL: one precise outcome
+GOALS: item || item
+DELIVERABLES: item || item
+REQUIREMENTS: item || item
+CONSTRAINTS: item || item
+ROLE: best expert role
+CONFIDENCE: high|medium|low
+REQUEST:
+${source}` }
+    ];
+  }
+
   function extractGeneratedText(result){
     // Chat pipelines return the message list with the assistant reply appended;
     // string prompts return plain text. Handle both, and strip any reasoning
@@ -1617,20 +1955,38 @@ ${source}` }
       'TASK_TYPE','TITLE','PRIMARY_GOAL','GOALS','DELIVERABLES','REQUIREMENTS',
       'CONSTRAINTS','DEPENDENCIES','RISKS','ASSUMPTIONS','ROLE','CONFIDENCE'
     ]);
-    String(text || '').replace(/```/g,'').split(/\r?\n/).forEach(line=>{
-      const match = line.match(/^\s*([A-Z_]+)\s*:\s*(.*?)\s*$/);
-      if(match && labels.has(match[1])) fields[match[1]] = match[2];
-    });
-    if(!fields.PRIMARY_GOAL && !fields.TITLE){
-      throw new Error('The repair response did not contain the required labeled fields.');
+    let currentLabel = '';
+    const lines = String(text || '').replace(/```/g,'').split(/\r?\n/);
+    for(const rawLine of lines){
+      const line = rawLine.trim();
+      if(!line) continue;
+      const match = line.match(/^[-*•]?\s*([A-Za-z][A-Za-z_ ]{1,30})\s*:\s*(.*?)\s*$/);
+      if(match){
+        const label = match[1].trim().toUpperCase().replace(/\s+/g,'_');
+        if(labels.has(label)){
+          currentLabel = label;
+          fields[label] = match[2].trim();
+          continue;
+        }
+      }
+      // Small models sometimes wrap a value onto the next line. Preserve it
+      // as a continuation instead of rejecting the entire response.
+      if(currentLabel) fields[currentLabel] = `${fields[currentLabel]} ${line}`.trim();
     }
+    if(!Object.keys(fields).length){
+      throw new Error('The local response did not contain recognizable labeled fields.');
+    }
+    const goals = splitLabeledItems(fields.GOALS);
+    const deliverables = splitLabeledItems(fields.DELIVERABLES);
+    const requirements = splitLabeledItems(fields.REQUIREMENTS);
+    const inferredGoal = fields.PRIMARY_GOAL || goals[0] || deliverables[0] || requirements[0] || fields.TITLE || '';
     return {
       taskType: fields.TASK_TYPE,
-      title: fields.TITLE,
-      primaryGoal: fields.PRIMARY_GOAL,
-      goals: splitLabeledItems(fields.GOALS),
-      deliverables: splitLabeledItems(fields.DELIVERABLES),
-      requirements: splitLabeledItems(fields.REQUIREMENTS),
+      title: fields.TITLE || inferredGoal,
+      primaryGoal: inferredGoal,
+      goals,
+      deliverables,
+      requirements,
       constraints: splitLabeledItems(fields.CONSTRAINTS),
       dependencies: splitLabeledItems(fields.DEPENDENCIES),
       risks: splitLabeledItems(fields.RISKS),
@@ -1743,50 +2099,70 @@ ${source}` }
 
     const rules = analyzeIntentRules(raw);
     try{
-      const generator = await getLocalTextGenerator();
       const source = compactSourceForModel(raw, rules);
-      setSmartStatus('Local AI is deriving goals, constraints, and success criteria…');
-      setAIProgress('Analyzing your request', `${activeLocalModel.label} is deriving goals, constraints, and success criteria…`);
-
-      const result = await runLocalGeneration(generator, localAnalysisMessages(source), {
-        max_new_tokens: isAppleTouchDevice() ? 320 : 512,
-        do_sample: false,
-        repetition_penalty: 1.05
-      });
-      const generated = extractGeneratedText(result);
-
       let modelAnalysis;
-      try{
-        if(!generated){
-          // Do not fall back yet — an empty first pass now routes into the
-          // simpler labeled repair prompt instead of abandoning local AI.
-          throw new Error('The local language model returned an empty first response.');
+
+      if(isAppleTouchDevice()){
+        // Never run generation on the iPhone/iPad page thread. The dedicated
+        // worker keeps taps, scrolling, Cancel, and Safari itself responsive.
+        if(typeof Worker === 'undefined'){
+          throw createStageError('worker-unavailable', null, 'This iPhone/iPad browser cannot run local AI safely in the background.');
         }
-        modelAnalysis = normalizeModelAnalysis(extractJsonObject(generated));
-        modelAnalysis.responseFormat = 'json';
-      }catch(jsonError){
-        // The model is available; only its output failed. Give it one
-        // simpler repair pass before using the deterministic fallback.
-        setSmartStatus('Local AI is finalizing the structured analysis…');
-        setAIProgress('Finalizing local AI analysis', 'The first pass completed; a smaller second pass is formatting the result…');
-        const repairResult = await runLocalGeneration(generator, localRepairMessages(source), {
-          max_new_tokens: isAppleTouchDevice() ? 256 : 400,
-          do_sample: false,
-          repetition_penalty: 1.05
-        });
-        const repairedText = extractGeneratedText(repairResult);
-        if(!repairedText){
-          throw createStageError('empty-response', null, 'The local language model returned an empty repair response.');
+        const workerResult = await runAppleWorkerAnalysis(source);
+        if(!workerResult.text){
+          throw createStageError('empty-response', null, 'The background local AI returned an empty response.');
         }
         try{
-          modelAnalysis = normalizeModelAnalysis(parseLabeledAnalysis(repairedText));
-          modelAnalysis.responseFormat = 'labeled repair';
-        }catch(repairError){
+          modelAnalysis = normalizeModelAnalysis(parseLabeledAnalysis(workerResult.text));
+          modelAnalysis.responseFormat = 'background labeled';
+          activeLocalModel = LOCAL_MODEL_CANDIDATES.find(m=>m.id === 'HuggingFaceTB/SmolLM2-135M-Instruct') || activeLocalModel;
+          activeLocalDevice = 'worker-wasm';
+          activeRuntimeLabel = workerResult.runtime || activeRuntimeLabel;
+        }catch(parseError){
           throw createStageError(
             'response-parse',
-            repairError,
-            `The local model ran, but its response could not be structured. ${errorMessage(jsonError)}`
+            parseError,
+            'The background local AI completed, but its short structured response could not be read.'
           );
+        }
+      }else{
+        const generator = await getLocalTextGenerator();
+        setSmartStatus('Local AI is deriving goals, constraints, and success criteria…');
+        setAIProgress('Analyzing your request', `${activeLocalModel.label} is deriving goals, constraints, and success criteria…`);
+
+        const result = await runLocalGeneration(generator, localAnalysisMessages(source), {
+          max_new_tokens:512,
+          do_sample:false,
+          repetition_penalty:1.05
+        });
+        const generated = extractGeneratedText(result);
+
+        try{
+          if(!generated) throw new Error('The local language model returned an empty first response.');
+          modelAnalysis = normalizeModelAnalysis(extractJsonObject(generated));
+          modelAnalysis.responseFormat = 'json';
+        }catch(jsonError){
+          setSmartStatus('Local AI is finalizing the structured analysis…');
+          setAIProgress('Finalizing local AI analysis', 'The first pass completed; a smaller second pass is formatting the result…');
+          const repairResult = await runLocalGeneration(generator, localRepairMessages(source), {
+            max_new_tokens:400,
+            do_sample:false,
+            repetition_penalty:1.05
+          });
+          const repairedText = extractGeneratedText(repairResult);
+          if(!repairedText){
+            throw createStageError('empty-response', null, 'The local language model returned an empty repair response.');
+          }
+          try{
+            modelAnalysis = normalizeModelAnalysis(parseLabeledAnalysis(repairedText));
+            modelAnalysis.responseFormat = 'labeled repair';
+          }catch(repairError){
+            throw createStageError(
+              'response-parse',
+              repairError,
+              `The local model ran, but its response could not be structured. ${errorMessage(jsonError)}`
+            );
+          }
         }
       }
 
@@ -1796,10 +2172,16 @@ ${source}` }
 
       const merged = mergeAnalyses(modelAnalysis, rules);
       smartAnalysisCache = {text:raw, analysis:merged};
-      finishAIProgress('Local AI analysis complete', `${activeLocalModel.label} · ${activeLocalDevice} · processed privately on this device`);
+      finishAIProgress(
+        'Local AI analysis complete',
+        isAppleTouchDevice()
+          ? `${activeLocalModel.label} · background worker · processed privately on this device`
+          : `${activeLocalModel.label} · ${activeLocalDevice} · processed privately on this device`
+      );
       return merged;
     }catch(err){
       hideAIProgress();
+      showAppleCancel(false);
       const stage = err && err.stage ? err.stage : 'unknown';
       const fallback = {
         ...rules,
@@ -2365,7 +2747,9 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
       const detail = (a.modelErrorDetail || a.modelError || '').slice(0, 260);
       setSmartStatus(`Rule fallback · ${localFailureLabel(a.modelErrorStage)} · tap Convert to retry${detail ? ` · ${detail}` : ''}`);
     }else{
-      const format = a.responseFormat === 'labeled repair' ? ' · response repaired locally' : '';
+      const format = a.responseFormat === 'labeled repair'
+        ? ' · response repaired locally'
+        : a.responseFormat === 'background labeled' ? ' · background AI' : '';
       setSmartStatus(`Local AI: ${pieces.join(' · ')}${format}`);
     }
   }
@@ -2407,6 +2791,7 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
   }
   $('convert').onclick = ()=>convert('prompt');
   $('convertLoop').onclick = ()=>convert('loop');
+  if($('aiProgressCancel')) $('aiProgressCancel').onclick = cancelAppleAIJob;
 
   /* ---------------- view mode: Raw / Preview ---------------- */
   function renderOutput(){
