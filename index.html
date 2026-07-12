@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
-<!-- Local AI engine upgrade: 2026-07-12 r2 — Transformers.js v4, iOS memory-safe model ladder (SmolLM2 on iPhone/iPad), crash ledger + draft restore after memory-kill reloads -->
+<!-- Local AI engine upgrade: 2026-07-12 r4 — single-threaded WASM for non-isolated contexts (webview/GitHub Pages session-init fix), tappable on-device diagnostics on the engine label -->
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -382,7 +382,7 @@
       <div class="toolbar-hint"><b>Tap</b> to format selected text · <b>Double-tap</b> to copy a sample · Use the highlighted controls to generate a prompt or agentic loop</div>
     </div>
     <div class="smart-status" aria-live="polite">
-      <strong>Hybrid local AI engine</strong>
+      <strong id="engineLabel" style="cursor:pointer" title="Tap to view local AI diagnostics">Hybrid local AI engine</strong>
       <span id="smartSummary">Waiting for text or a document</span>
     </div>
     <textarea id="input" placeholder="Paste, type, drop, or upload TXT, RTF, DOC, MD, or PDF. WhatsUpDocMD will infer the intended goals and structure the result into a ready-to-use prompt or agentic loop." spellcheck="true"></textarea>
@@ -1012,6 +1012,55 @@
     return null;
   }
 
+  /* ---- on-device diagnostics ----
+     Console output is unreachable inside in-app webviews, so the last
+     local-AI failure is stored and made visible by tapping the
+     "Hybrid local AI engine" label: tap 1 shows the failure detail,
+     tap 2 shows the environment snapshot, tap 3 returns to the summary. */
+  const LAST_ERROR_KEY = 'wud_localai_lasterror';
+  let diagnosticsTapState = 0;
+
+  function recordLocalAIFailure(stage, message, detail){
+    const record = {stage, message, detail, ts: new Date().toISOString()};
+    try{ localStorage.setItem(LAST_ERROR_KEY, JSON.stringify(record)); }catch{}
+    return record;
+  }
+
+  function readLastLocalAIFailure(){
+    try{ return JSON.parse(localStorage.getItem(LAST_ERROR_KEY) || 'null'); }catch{ return null; }
+  }
+
+  function environmentSnapshot(){
+    const parts = [
+      `isolated:${!!globalThis.crossOriginIsolated}`,
+      `wasm:${typeof WebAssembly !== 'undefined'}`,
+      `gpuAPI:${!!(navigator && navigator.gpu)}`,
+      `gpuBroken:${webgpuRuntimeBroken}`,
+      `touchApple:${isAppleTouchDevice()}`,
+      `blocked:[${readBlockedCombos().join(', ') || 'none'}]`,
+      `model:${activeLocalModelId()}`
+    ];
+    return parts.join(' · ');
+  }
+
+  function wireDiagnosticsLabel(){
+    const label = $('engineLabel');
+    if(!label) return;
+    label.addEventListener('click', ()=>{
+      diagnosticsTapState = (diagnosticsTapState + 1) % 3;
+      if(diagnosticsTapState === 1){
+        const last = readLastLocalAIFailure();
+        setSmartStatus(last
+          ? `Last local AI error [${last.stage}]: ${String(last.detail || last.message).slice(0, 500)}`
+          : 'No local AI errors recorded on this device.');
+      }else if(diagnosticsTapState === 2){
+        setSmartStatus(`Env — ${environmentSnapshot()}`);
+      }else{
+        updateSmartSummary();
+      }
+    });
+  }
+
   function setSmartStatus(message){
     $('smartSummary').textContent = message;
   }
@@ -1062,10 +1111,44 @@
     return transformersModulePromise;
   }
 
-  function deviceCandidates(){
-    // WebGPU is dramatically faster where available (Chrome, Edge, Safari 26+
-    // including iOS). WASM remains the universal fallback.
-    return (typeof navigator !== 'undefined' && navigator.gpu) ? ['webgpu','wasm'] : ['wasm'];
+  /* WebKit webviews (in-app browsers, PWAs on some iOS builds) expose
+     navigator.gpu without a working WebGPU stack. Symptoms include
+     "DataCloneError: The object can not be cloned" when ONNX Runtime
+     proxies GPU session setup to a worker. Two defenses:
+     1. Probe for an actual adapter before ever listing webgpu.
+     2. If webgpu still fails at runtime, disable it for the rest of the
+        session so remaining candidates skip straight to wasm. */
+  let webgpuRuntimeBroken = false;
+  let webgpuProbePromise = null;
+
+  function probeWebGPU(){
+    if(webgpuProbePromise) return webgpuProbePromise;
+    webgpuProbePromise = (async()=>{
+      try{
+        if(typeof navigator === 'undefined' || !navigator.gpu) return false;
+        const adapter = await navigator.gpu.requestAdapter();
+        return !!adapter;
+      }catch{
+        return false;
+      }
+    })();
+    return webgpuProbePromise;
+  }
+
+  async function deviceCandidates(){
+    // WebGPU is dramatically faster where genuinely available (Chrome, Edge,
+    // Safari 26+ including iOS). WASM remains the universal fallback.
+    if(webgpuRuntimeBroken) return ['wasm'];
+    return (await probeWebGPU()) ? ['webgpu','wasm'] : ['wasm'];
+  }
+
+  function isWebGPURuntimeFailure(err, device){
+    if(device !== 'webgpu') return false;
+    const name = err && err.name ? String(err.name) : '';
+    const msg = errorMessage(err).toLowerCase();
+    return name === 'DataCloneError' ||
+           msg.includes('can not be cloned') || msg.includes('cannot be cloned') ||
+           msg.includes('webgpu') || msg.includes('gpudevice') || msg.includes('adapter');
   }
 
   function modelCandidatesForDevice(){
@@ -1105,11 +1188,25 @@
       const T = await getTransformersModule();
       T.env.allowLocalModels = false;
       T.env.useBrowserCache = true;
+      // Keep ONNX Runtime on the main thread. In WebKit webviews, proxying
+      // session setup to a worker triggers "DataCloneError: The object can
+      // not be cloned" because GPU/runtime objects aren't structured-cloneable.
+      try{ if(T.env.backends?.onnx?.wasm) T.env.backends.onnx.wasm.proxy = false; }catch{}
+      // Multithreaded WASM needs SharedArrayBuffer, which requires COOP/COEP
+      // headers (GitHub Pages doesn't send them) and worker spawning that
+      // in-app webviews frequently block. Without this, session creation can
+      // fail right after a successful download. Force single-threaded.
+      try{
+        if(T.env.backends?.onnx?.wasm && !globalThis.crossOriginIsolated){
+          T.env.backends.onnx.wasm.numThreads = 1;
+        }
+      }catch{}
 
       const blocked = readBlockedCombos();
       const attempts = [];
       for(const modelInfo of modelCandidatesForDevice()){
-        for(const device of deviceCandidates()){
+        for(const device of await deviceCandidates()){
+          if(device === 'webgpu' && webgpuRuntimeBroken) continue;
           const comboKey = `${modelInfo.id}|${device}`;
           if(blocked.includes(comboKey)){
             attempts.push(`${modelInfo.label} on ${device}: skipped (previously crashed this device)`);
@@ -1131,7 +1228,14 @@
           }catch(err){
             clearPendingAttempt();
             attempts.push(`${modelInfo.label} on ${device}: ${errorMessage(err)}`);
-            console.warn('[WhatsUpDocMD local AI] candidate failed', modelInfo.id, device, err);
+            if(isWebGPURuntimeFailure(err, device)){
+              // This browser advertises WebGPU but can't actually run it —
+              // skip webgpu for every remaining candidate this session.
+              webgpuRuntimeBroken = true;
+              console.warn('[WhatsUpDocMD local AI] WebGPU is advertised but non-functional here; using WASM for all models.', err);
+            }else{
+              console.warn('[WhatsUpDocMD local AI] candidate failed', modelInfo.id, device, err);
+            }
           }
         }
       }
@@ -1448,6 +1552,7 @@ ${source}` }
 
       // Do not cache this fallback. A second Convert press must retry local AI.
       smartAnalysisCache = {text:'', analysis:null};
+      recordLocalAIFailure(stage, fallback.modelError, fallback.modelErrorDetail);
       console.error('[WhatsUpDocMD local AI]', {
         stage,
         message: fallback.modelError,
@@ -2206,6 +2311,7 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
   // model initialization). The crash ledger has already blocklisted the
   // model that caused it, so the next Convert uses a smaller model.
   const crashedCombo = processCrashLedgerOnBoot();
+  wireDiagnosticsLabel();
   try{
     const savedDraft = localStorage.getItem(DRAFT_KEY);
     if(savedDraft && !input.value.trim()){
