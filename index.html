@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
+<!-- Local AI reliability patch: 2026-07-12 -->
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -175,6 +176,13 @@
   .output.preview a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
   .output.preview code{font:400 12px var(--mono);background:var(--surface-2);border:1px solid var(--border);border-radius:5px;padding:1.5px 5px;color:var(--accent)}
   .output.preview pre{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px;overflow:auto;margin:0 0 12px}
+  .output.preview pre.copy-box{position:relative;padding-top:42px;border-color:var(--accent-line);box-shadow:0 10px 28px -22px var(--accent)}
+  .output.preview pre.copy-box::before{
+    content:'COPY & PASTE';position:absolute;top:0;left:0;right:0;height:30px;
+    display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--border);
+    color:var(--accent);background:var(--accent-soft);font:600 10px/1 'Inter',sans-serif;
+    letter-spacing:.12em;text-transform:uppercase;
+  }
   .output.preview pre code{background:none;border:0;padding:0;color:#cfc8dc;font-size:12px;line-height:1.6}
   .output.preview blockquote{border-left:3px solid var(--accent-line);background:var(--accent-soft);border-radius:0 8px 8px 0;padding:8px 12px;margin:0 0 12px;color:var(--muted)}
   .output.preview blockquote p:last-child{margin-bottom:0}
@@ -553,6 +561,7 @@
 
   function clearConvertedOutput(){
     rawMD = '';
+    rawPayload = '';
     output.textContent = '';
     output.classList.remove('preview');
     $('outCount').textContent = '';
@@ -897,19 +906,25 @@
   }
 
   /* ---------------- local LLM semantic analysis ----------------
-     Uses the same local-download pattern as index-with-local-llm.html:
-     Transformers.js is imported on demand, the model is downloaded once,
-     cached by the browser, and all source text stays on the device.
+     The local model is loaded on demand with Transformers.js. Model assets
+     are stored in the browser cache and reused on later visits. The rule-based
+     analyzer always remains available as a private verifier and fallback.
 
-     The local model handles semantic interpretation. The deterministic engine
-     remains active as a verifier/fallback so exact filenames, explicit
-     constraints, and test instructions are not lost.
+     Reliability safeguards in this version:
+     - Only successful local-AI analyses are cached.
+     - A failed attempt is retried the next time Convert is pressed.
+     - Model loading, inference, and response parsing report separate errors.
+     - Invalid JSON receives a second, simpler labeled-output repair pass.
+     - The semantic prompt is compact enough for a small T5 context window.
   ------------------------------------------------------------------ */
   const LOCAL_TEXT_MODEL = 'Xenova/flan-t5-small';
+  const TRANSFORMERS_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
   const VALID_TASK_TYPES = new Set(['software','research','design','writing','data','planning','general']);
   let localTextGenerator = null;
   let localModelPromise = null;
+  let transformersModulePromise = null;
   let smartAnalysisCache = {text:'', analysis:null};
+  let localModelDownloadObserved = false;
 
   function setSmartStatus(message){
     $('smartSummary').textContent = message;
@@ -920,25 +935,87 @@
     return Math.max(0, Math.min(100, Math.round((p.loaded / p.total) * 100)));
   }
 
+  function errorMessage(err){
+    if(err && typeof err.message === 'string' && err.message.trim()) return err.message.trim();
+    return String(err || 'Unknown local AI error');
+  }
+
+  function createStageError(stage, err, friendlyMessage){
+    const wrapped = new Error(friendlyMessage || errorMessage(err));
+    wrapped.stage = stage;
+    wrapped.cause = err;
+    wrapped.detail = errorMessage(err);
+    return wrapped;
+  }
+
+  function localFailureLabel(stage){
+    return {
+      'module-load':'Transformers.js could not load',
+      'model-load':'The local language model could not initialize',
+      'inference':'The local language model could not complete inference',
+      'empty-response':'The local language model returned an empty response',
+      'response-parse':'The local AI response could not be structured'
+    }[stage] || 'Local AI processing failed';
+  }
+
+  function resetLocalModelSession(){
+    localTextGenerator = null;
+    localModelPromise = null;
+  }
+
+  async function getTransformersModule(){
+    if(transformersModulePromise) return transformersModulePromise;
+    transformersModulePromise = import(TRANSFORMERS_MODULE_URL).catch(err=>{
+      transformersModulePromise = null;
+      throw createStageError(
+        'module-load',
+        err,
+        'Transformers.js could not load. Connect to the internet once so the local AI runtime can be cached.'
+      );
+    });
+    return transformersModulePromise;
+  }
+
   async function getLocalTextGenerator(){
     if(localTextGenerator) return localTextGenerator;
     if(localModelPromise) return localModelPromise;
 
     localModelPromise = (async()=>{
-      setSmartStatus('Downloading the local language model — one time only, then cached…');
-      const T = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+      localModelDownloadObserved = false;
+      setSmartStatus('Checking the browser cache for the local language model…');
+      const T = await getTransformersModule();
       T.env.allowLocalModels = false;
       T.env.useBrowserCache = true;
-      localTextGenerator = await T.pipeline('text2text-generation', LOCAL_TEXT_MODEL, {
-        quantized: true,
-        progress_callback: p=>{
-          const pct = progressPercent(p);
-          if(pct !== null) setSmartStatus(`Downloading local language model… ${pct}%`);
-        }
-      });
+
+      try{
+        localTextGenerator = await T.pipeline('text2text-generation', LOCAL_TEXT_MODEL, {
+          quantized: true,
+          progress_callback: p=>{
+            const pct = progressPercent(p);
+            if(pct !== null){
+              localModelDownloadObserved = true;
+              setSmartStatus(`Downloading local language model… ${pct}%`);
+            }else if(p && p.status === 'initiate'){
+              setSmartStatus('Loading local language model files…');
+            }else if(p && p.status === 'ready'){
+              setSmartStatus('Local language model ready');
+            }
+          }
+        });
+      }catch(err){
+        throw createStageError(
+          'model-load',
+          err,
+          'The local language model could not initialize from its browser cache or remote source.'
+        );
+      }
+
+      setSmartStatus(localModelDownloadObserved
+        ? 'Local language model downloaded and ready'
+        : 'Local language model loaded from browser cache');
       return localTextGenerator;
     })().catch(err=>{
-      localModelPromise = null;
+      resetLocalModelSession();
       throw err;
     });
 
@@ -947,57 +1024,105 @@
 
   function compactSourceForModel(text, rules){
     const raw = String(text || '').trim();
-    if(raw.length <= 3200) return raw;
+    if(raw.length <= 1250) return raw;
 
     const lines = meaningfulLines(raw);
     const signalPattern = /\b(?:must|should|need|goal|objective|deliver|create|build|update|fix|implement|include|support|preserve|avoid|do not|don't|test|verify|validate|run|attached|reference|source of truth|done when|complete when)\b/i;
-    const signalLines = uniqueLimited(lines.filter(line=>signalPattern.test(line)), 24);
-    const refs = rules.references || [];
-    const head = raw.slice(0, 1200);
-    const tail = raw.slice(-700);
+    const signalLines = uniqueLimited(lines.filter(line=>signalPattern.test(line)), 12);
+    const refs = (rules.references || []).slice(0,4);
     const compact = [
-      head,
-      signalLines.length ? '\nKEY REQUIREMENT LINES:\n' + signalLines.join('\n') : '',
-      refs.length ? '\nNAMED REFERENCES:\n' + refs.join('\n') : '',
-      '\nENDING CONTEXT:\n' + tail
+      raw.slice(0, 560),
+      signalLines.length ? '\nKEY LINES:\n' + signalLines.join('\n') : '',
+      refs.length ? '\nREFERENCES:\n' + refs.join('\n') : '',
+      '\nENDING CONTEXT:\n' + raw.slice(-260)
     ].join('\n');
-    return compact.slice(0, 2800);
+    return compact.slice(0, 1450);
   }
 
   function localAnalysisPrompt(source){
-    return `Analyze the user request below. Infer the intended outcome, not merely its wording. Return ONLY one compact JSON object with no markdown or commentary.
+    return `Analyze this request and return ONLY valid minified JSON. Use empty arrays when unsupported.
+Schema: {"taskType":"software|research|design|writing|data|planning|general","title":"short title","primaryGoal":"precise outcome","goals":["..."],"deliverables":["..."],"requirements":["..."],"constraints":["..."],"dependencies":["..."],"risks":["..."],"assumptions":["..."],"role":"expert role","confidence":"high|medium|low"}
+Preserve explicit intent. Do not invent features. Separate deliverables from constraints.
+REQUEST:\n${source}`;
+  }
 
-Required JSON schema:
-{"taskType":"software|research|design|writing|data|planning|general","title":"short title","primaryGoal":"one precise outcome sentence","goals":["..."],"deliverables":["..."],"requirements":["..."],"constraints":["..."],"references":["..."],"validation":["..."],"successCriteria":["..."],"dependencies":["..."],"risks":["..."],"assumptions":["..."],"role":"best expert role","confidence":"high|medium|low"}
-
-Rules:
-- Preserve exact filenames, URLs, quoted labels, and explicit prohibitions.
-- Separate what must be built from what must not change.
-- Convert vague wording into a concrete outcome without inventing unsupported features.
-- Include only facts reasonably supported by the request.
-- Keep each array concise, deduplicated, and action-oriented.
-
-USER REQUEST:
-${source}`;
+  function localRepairPrompt(source){
+    return `Analyze the request. Return exactly the labeled lines below. Separate multiple items with ||. Do not add commentary.
+TASK_TYPE: software|research|design|writing|data|planning|general
+TITLE: short title
+PRIMARY_GOAL: one precise outcome
+GOALS: item || item
+DELIVERABLES: item || item
+REQUIREMENTS: item || item
+CONSTRAINTS: item || item
+DEPENDENCIES: item || item
+RISKS: item || item
+ASSUMPTIONS: item || item
+ROLE: best expert role
+CONFIDENCE: high|medium|low
+REQUEST:\n${source}`;
   }
 
   function extractJsonObject(text){
     const cleaned = String(text || '').replace(/```(?:json)?/gi,'').replace(/```/g,'').trim();
     const start = cleaned.indexOf('{');
     const end = cleaned.lastIndexOf('}');
-    if(start < 0 || end <= start) throw new Error('Local model did not return structured JSON.');
+    if(start < 0 || end <= start) throw new Error('The model did not return a complete JSON object.');
     const candidate = cleaned.slice(start, end + 1);
     try{ return JSON.parse(candidate); }
-    catch{
-      // Small instruction models occasionally emit smart quotes or trailing commas.
+    catch(firstError){
+      // Small instruction models occasionally emit smart quotes, single quotes,
+      // Python values, or trailing commas. Repair only these safe patterns.
       const repaired = candidate
         .replace(/[“”]/g,'"')
         .replace(/[‘’]/g,"'")
+        .replace(/\bNone\b/g,'null')
+        .replace(/\bTrue\b/g,'true')
+        .replace(/\bFalse\b/g,'false')
         .replace(/,\s*([}\]])/g,'$1')
         .replace(/([{,]\s*)'([^']+)'\s*:/g,'$1"$2":')
-        .replace(/:\s*'([^']*)'(?=\s*[,}])/g,(_,v)=>`: ${JSON.stringify(v)}`);
-      return JSON.parse(repaired);
+        .replace(/:\s*'([^']*)'(?=\s*[,}])/g,(_,v)=>`: ${JSON.stringify(v)}`)
+        .replace(/\[\s*'([^\]]*)'\s*\]/g,(_,v)=>'[' + v.split(/'\s*,\s*'/).map(x=>JSON.stringify(x)).join(',') + ']');
+      try{ return JSON.parse(repaired); }
+      catch{
+        throw new Error(`The model returned malformed JSON: ${firstError.message}`);
+      }
     }
+  }
+
+  function splitLabeledItems(value){
+    const clean = String(value || '').trim();
+    if(!clean || /^(?:none|n\/a|not stated|unknown|\[\])$/i.test(clean)) return [];
+    return clean.split(/\s*\|\|\s*|\s*;\s*/).map(item=>item.trim()).filter(Boolean);
+  }
+
+  function parseLabeledAnalysis(text){
+    const fields = {};
+    const labels = new Set([
+      'TASK_TYPE','TITLE','PRIMARY_GOAL','GOALS','DELIVERABLES','REQUIREMENTS',
+      'CONSTRAINTS','DEPENDENCIES','RISKS','ASSUMPTIONS','ROLE','CONFIDENCE'
+    ]);
+    String(text || '').replace(/```/g,'').split(/\r?\n/).forEach(line=>{
+      const match = line.match(/^\s*([A-Z_]+)\s*:\s*(.*?)\s*$/);
+      if(match && labels.has(match[1])) fields[match[1]] = match[2];
+    });
+    if(!fields.PRIMARY_GOAL && !fields.TITLE){
+      throw new Error('The repair response did not contain the required labeled fields.');
+    }
+    return {
+      taskType: fields.TASK_TYPE,
+      title: fields.TITLE,
+      primaryGoal: fields.PRIMARY_GOAL,
+      goals: splitLabeledItems(fields.GOALS),
+      deliverables: splitLabeledItems(fields.DELIVERABLES),
+      requirements: splitLabeledItems(fields.REQUIREMENTS),
+      constraints: splitLabeledItems(fields.CONSTRAINTS),
+      dependencies: splitLabeledItems(fields.DEPENDENCIES),
+      risks: splitLabeledItems(fields.RISKS),
+      assumptions: splitLabeledItems(fields.ASSUMPTIONS),
+      role: fields.ROLE,
+      confidence: fields.CONFIDENCE
+    };
   }
 
   function normalizeString(value, fallback=''){
@@ -1034,6 +1159,15 @@ ${source}`;
     };
   }
 
+  function hasUsefulModelAnalysis(value){
+    return Boolean(
+      value && (
+        value.primaryGoal || value.title || value.goals.length ||
+        value.deliverables.length || value.requirements.length
+      )
+    );
+  }
+
   function combineLists(primary, verifier, limit){
     return uniqueLimited([...(primary || []), ...(verifier || [])], limit);
   }
@@ -1045,7 +1179,7 @@ ${source}`;
     const title = titleSource.length > 72 ? titleSource.slice(0,69) + '…' : titleSource;
     const goals = combineLists(modelAnalysis.goals, rules.goals, 8);
     const deliverables = combineLists(modelAnalysis.deliverables, rules.deliverables, 10);
-    // Exact rule-derived constraints and references are placed first as a safeguard.
+    // Exact rule-derived constraints and references are placed first as safeguards.
     const constraints = combineLists(rules.constraints, modelAnalysis.constraints, 10);
     const references = combineLists(rules.references, modelAnalysis.references, 10);
     const requirements = combineLists(modelAnalysis.requirements, rules.requirements, 12);
@@ -1070,31 +1204,84 @@ ${source}`;
       validationStrategy: validationForTask(taskType),
       confidence: modelAnalysis.confidence || rules.confidence,
       analysisEngine: 'local LLM + deterministic verification',
-      localModel: LOCAL_TEXT_MODEL
+      localModel: LOCAL_TEXT_MODEL,
+      responseFormat: modelAnalysis.responseFormat || 'json'
     };
+  }
+
+  async function runLocalGeneration(generator, prompt, options){
+    try{
+      return await generator(prompt, options);
+    }catch(err){
+      throw createStageError('inference', err, 'The local language model could not complete this request.');
+    }
   }
 
   async function analyzeIntentSmart(text){
     const raw = String(text || '').trim();
-    if(smartAnalysisCache.text === raw && smartAnalysisCache.analysis) return smartAnalysisCache.analysis;
+    // Only successful local-AI results are cached. Rule fallbacks always retry.
+    if(
+      smartAnalysisCache.text === raw &&
+      smartAnalysisCache.analysis &&
+      smartAnalysisCache.analysis.analysisEngine !== 'deterministic fallback'
+    ) return smartAnalysisCache.analysis;
 
     const rules = analyzeIntentRules(raw);
     try{
       const generator = await getLocalTextGenerator();
-      setSmartStatus('Local AI is deriving goals, constraints, and success criteria…');
       const source = compactSourceForModel(raw, rules);
-      const result = await generator(localAnalysisPrompt(source), {
-        max_new_tokens: 520,
+      setSmartStatus('Local AI is deriving goals, constraints, and success criteria…');
+
+      const result = await runLocalGeneration(generator, localAnalysisPrompt(source), {
+        max_new_tokens: 380,
         do_sample: false,
         truncation: true,
         repetition_penalty: 1.08
       });
       const generated = result?.[0]?.generated_text || '';
-      const modelAnalysis = normalizeModelAnalysis(extractJsonObject(generated));
+      if(!generated.trim()){
+        throw createStageError('empty-response', null, 'The local language model returned an empty response.');
+      }
+
+      let modelAnalysis;
+      try{
+        modelAnalysis = normalizeModelAnalysis(extractJsonObject(generated));
+        modelAnalysis.responseFormat = 'json';
+      }catch(jsonError){
+        // The model is available; only its formatting failed. Give it one
+        // shorter repair pass before using the deterministic fallback.
+        setSmartStatus('Local AI is repairing its structured response…');
+        const repairResult = await runLocalGeneration(generator, localRepairPrompt(source), {
+          max_new_tokens: 300,
+          do_sample: false,
+          truncation: true,
+          repetition_penalty: 1.05
+        });
+        const repairedText = repairResult?.[0]?.generated_text || '';
+        if(!repairedText.trim()){
+          throw createStageError('empty-response', null, 'The local language model returned an empty repair response.');
+        }
+        try{
+          modelAnalysis = normalizeModelAnalysis(parseLabeledAnalysis(repairedText));
+          modelAnalysis.responseFormat = 'labeled repair';
+        }catch(repairError){
+          throw createStageError(
+            'response-parse',
+            repairError,
+            `The local model ran, but its response could not be structured. ${errorMessage(jsonError)}`
+          );
+        }
+      }
+
+      if(!hasUsefulModelAnalysis(modelAnalysis)){
+        throw createStageError('response-parse', null, 'The local model response did not contain a usable goal or deliverable.');
+      }
+
       const merged = mergeAnalyses(modelAnalysis, rules);
       smartAnalysisCache = {text:raw, analysis:merged};
       return merged;
     }catch(err){
+      const stage = err && err.stage ? err.stage : 'unknown';
       const fallback = {
         ...rules,
         dependencies: [],
@@ -1102,9 +1289,22 @@ ${source}`;
         assumptions: [],
         analysisEngine: 'deterministic fallback',
         localModel: LOCAL_TEXT_MODEL,
-        modelError: err && err.message ? err.message : String(err)
+        modelErrorStage: stage,
+        modelError: errorMessage(err),
+        modelErrorDetail: err && err.detail ? err.detail : errorMessage(err)
       };
-      smartAnalysisCache = {text:raw, analysis:fallback};
+
+      // Do not cache this fallback. A second Convert press must retry local AI.
+      smartAnalysisCache = {text:'', analysis:null};
+      console.error('[WhatsUpDocMD local AI]', {
+        stage,
+        message: fallback.modelError,
+        detail: fallback.modelErrorDetail,
+        error: err
+      });
+
+      // A broken inference session can be safely recreated from browser cache.
+      if(stage === 'model-load' || stage === 'inference') resetLocalModelSession();
       return fallback;
     }
   }
@@ -1139,6 +1339,29 @@ ${source}`;
   function firstLine(t){
     const analysis = analyzeIntentRules(t);
     return analysis.title || 'Untitled request';
+  }
+
+  function longestBacktickRun(text){
+    const runs = String(text || '').match(/`+/g) || [];
+    return runs.reduce((max, run)=>Math.max(max, run.length), 0);
+  }
+
+  function wrapGeneratedArtifact(content, mode, targetModel){
+    const isLoop = mode === 'loop';
+    const target = targetModel === 'claude'
+      ? (isLoop ? 'Claude Code' : 'Claude')
+      : (isLoop ? 'Codex or ChatGPT' : 'ChatGPT');
+    const kind = isLoop ? 'Agentic AI Loop' : 'AI Prompt';
+    // Use a fence longer than any backtick sequence already present in the
+    // generated payload so embedded code examples cannot close the outer box.
+    const fence = '`'.repeat(Math.max(3, longestBacktickRun(content) + 1));
+    return `# ${kind} for ${target}
+
+> Copy everything inside the code box below and paste it into ${target}.
+
+${fence}text
+${String(content || '').trim()}
+${fence}`;
   }
 
   function buildClaude(text, analysis){
@@ -1598,7 +1821,8 @@ Include only one materially useful next step.
 Do not claim exact parity, passing tests, successful builds, or completed work unless those results were actually observed.`;
   }
 
-  let rawMD = '';           // source of truth for the converted prompt
+  let rawMD = '';           // display Markdown, including the copy-and-paste code box
+  let rawPayload = '';      // prompt/loop content copied directly to Claude or ChatGPT
   let viewMode = 'raw';     // 'raw' | 'preview'
   let convMode = 'prompt';  // 'prompt' | 'loop' — last conversion type
 
@@ -1610,14 +1834,18 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
   }
 
   function showAnalysisSummary(a){
-    const engine = a.analysisEngine === 'deterministic fallback' ? 'rule fallback' : 'local AI';
     const pieces = [
       `${a.taskType} task`,
       `${a.goals.length} goal${a.goals.length===1?'':'s'}`,
       `${a.requirements.length} requirement${a.requirements.length===1?'':'s'}`,
       `${a.constraints.length} constraint${a.constraints.length===1?'':'s'}`
     ];
-    setSmartStatus(`${engine}: ${pieces.join(' · ')}`);
+    if(a.analysisEngine === 'deterministic fallback'){
+      setSmartStatus(`Rule fallback · ${localFailureLabel(a.modelErrorStage)} · tap Convert to retry`);
+    }else{
+      const format = a.responseFormat === 'labeled repair' ? ' · response repaired locally' : '';
+      setSmartStatus(`Local AI: ${pieces.join(' · ')}${format}`);
+    }
   }
 
   async function convert(mode){
@@ -1629,15 +1857,17 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
     setConversionBusy(true);
     try{
       const analysis = await analyzeIntentSmart(text);
-      rawMD = convMode==='loop'
+      rawPayload = convMode==='loop'
         ? buildLoop(text, model, analysis)
         : (model==='claude' ? buildClaude(text, analysis) : buildGPT(text, analysis));
+      rawMD = wrapGeneratedArtifact(rawPayload, convMode, model);
       updateOutLabel();
       renderOutput();
       $('outCount').textContent = rawMD.length + ' chars';
       showAnalysisSummary(analysis);
       if(analysis.analysisEngine === 'deterministic fallback'){
-        say('Local AI was unavailable — generated with the private rule-based fallback');
+        const reason = localFailureLabel(analysis.modelErrorStage);
+        say(`${reason} — private rule fallback used; tap Convert to retry`);
       }else{
         say(convMode === 'loop' ? 'Agentic Loop generated with local AI' : 'Prompt generated with local AI');
       }
@@ -1696,11 +1926,14 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
     while(i < lines.length){
       const L = lines[i];
 
-      if(/^```/.test(L)){                                    // fenced code block
+      const fenceOpen = L.match(/^(`{3,})(?:[^`]*)$/);
+      if(fenceOpen){                                         // fenced code block
         flushPara();
+        const fence = fenceOpen[1];
         let buf = []; i++;
-        while(i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
-        i++; html += '<pre><code>' + buf.join('\n') + '</code></pre>'; continue;
+        while(i < lines.length && lines[i].trim() !== fence) buf.push(lines[i++]);
+        if(i < lines.length) i++;
+        html += '<pre class="copy-box"><code>' + buf.join('\n') + '</code></pre>'; continue;
       }
       if(/^(---|\*\*\*|___)\s*$/.test(L)){ flushPara(); html += '<hr>'; i++; continue; }
       const h = L.match(/^(#{1,3})\s+(.*)/);
@@ -1811,11 +2044,16 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
     if(!t){ say('Convert your text first'); return null; }
     return t;
   }
+  function getCopyPayload(){
+    const t = rawPayload.trim();
+    if(!t){ say('Convert your text first'); return null; }
+    return t;
+  }
   const fileName = () => (convMode==='loop' ? 'loop.' : 'prompt.') + (model==='claude' ? 'claude.md' : 'gpt.md');
 
   $('shCopy').onclick = async ()=>{
-    const t = getMD(); if(!t) return;
-    try{ await navigator.clipboard.writeText(t); say((convMode==='loop' ? 'Agentic loop' : '.md prompt') + ' copied to clipboard'); }
+    const t = getCopyPayload(); if(!t) return;
+    try{ await navigator.clipboard.writeText(t); say((convMode==='loop' ? 'Agentic loop' : 'AI prompt') + ' copied — ready to paste'); }
     catch{ say('Copy failed — select the output text manually'); }
   };
 
