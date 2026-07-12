@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
-<!-- Local AI reliability patch: 2026-07-12 -->
+<!-- Local AI engine upgrade: 2026-07-12 — Transformers.js v4 + Qwen2.5-0.5B-Instruct (WebGPU/WASM), replaces flan-t5-small -->
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -906,25 +906,47 @@
   }
 
   /* ---------------- local LLM semantic analysis ----------------
-     The local model is loaded on demand with Transformers.js. Model assets
-     are stored in the browser cache and reused on later visits. The rule-based
-     analyzer always remains available as a private verifier and fallback.
+     The local model is loaded on demand with Transformers.js v4 and cached in
+     the browser for later visits. The rule-based analyzer always remains
+     available as a private verifier and fallback.
 
-     Reliability safeguards in this version:
-     - Only successful local-AI analyses are cached.
-     - A failed attempt is retried the next time Convert is pressed.
-     - Model loading, inference, and response parsing report separate errors.
-     - Invalid JSON receives a second, simpler labeled-output repair pass.
-     - The semantic prompt is compact enough for a small T5 context window.
+     Why the engine changed (2026-07 reliability patch):
+     - The previous model (Xenova/flan-t5-small, 80M params, seq2seq) has a
+       ~512-token input window. The JSON-schema prompt plus the compacted
+       request routinely exceeded it; with truncation enabled the tail of the
+       prompt was silently cut and the model frequently emitted EOS
+       immediately — the source of the recurring "empty response" fallbacks.
+     - Flan-T5-small was also never instruction-tuned for JSON output.
+
+     Current engine:
+     - Transformers.js v4 (@huggingface/transformers) with WebGPU when the
+       browser supports it, WebAssembly otherwise.
+     - Primary model: Qwen2.5-0.5B-Instruct (q4) — a chat-tuned decoder that
+       reliably follows "return only JSON" instructions and has a 32k context.
+     - Backup model: SmolLM2-360M-Instruct (q4) for memory-constrained
+       devices where the primary model fails to initialize.
+     - An empty or malformed first response triggers the simpler labeled
+       repair pass before the deterministic fallback is ever used.
+     - Only successful local-AI analyses are cached; failures retry on the
+       next Convert press.
   ------------------------------------------------------------------ */
-  const LOCAL_TEXT_MODEL = 'Xenova/flan-t5-small';
-  const TRANSFORMERS_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+  const TRANSFORMERS_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0';
+  const LOCAL_MODEL_CANDIDATES = [
+    { id:'onnx-community/Qwen2.5-0.5B-Instruct', label:'Qwen2.5 0.5B Instruct', approxDownload:'≈350 MB' },
+    { id:'HuggingFaceTB/SmolLM2-360M-Instruct',  label:'SmolLM2 360M Instruct', approxDownload:'≈250 MB' }
+  ];
   const VALID_TASK_TYPES = new Set(['software','research','design','writing','data','planning','general']);
   let localTextGenerator = null;
   let localModelPromise = null;
   let transformersModulePromise = null;
   let smartAnalysisCache = {text:'', analysis:null};
   let localModelDownloadObserved = false;
+  let activeLocalModel = LOCAL_MODEL_CANDIDATES[0]; // updated once a model actually loads
+  let activeLocalDevice = 'wasm';
+
+  function activeLocalModelId(){
+    return `${activeLocalModel.id} (${activeLocalDevice})`;
+  }
 
   function setSmartStatus(message){
     $('smartSummary').textContent = message;
@@ -976,44 +998,65 @@
     return transformersModulePromise;
   }
 
+  function deviceCandidates(){
+    // WebGPU is dramatically faster where available (Chrome, Edge, Safari 26+
+    // including iOS). WASM remains the universal fallback.
+    return (typeof navigator !== 'undefined' && navigator.gpu) ? ['webgpu','wasm'] : ['wasm'];
+  }
+
+  async function loadPipelineCandidate(T, modelInfo, device){
+    localModelDownloadObserved = false;
+    return T.pipeline('text-generation', modelInfo.id, {
+      dtype: 'q4',
+      device,
+      progress_callback: p=>{
+        const pct = progressPercent(p);
+        if(pct !== null){
+          localModelDownloadObserved = true;
+          setSmartStatus(`Downloading ${modelInfo.label} (${modelInfo.approxDownload}, one time)… ${pct}%`);
+        }else if(p && p.status === 'initiate'){
+          setSmartStatus(`Loading ${modelInfo.label} files…`);
+        }else if(p && p.status === 'ready'){
+          setSmartStatus(`${modelInfo.label} ready`);
+        }
+      }
+    });
+  }
+
   async function getLocalTextGenerator(){
     if(localTextGenerator) return localTextGenerator;
     if(localModelPromise) return localModelPromise;
 
     localModelPromise = (async()=>{
-      localModelDownloadObserved = false;
       setSmartStatus('Checking the browser cache for the local language model…');
       const T = await getTransformersModule();
       T.env.allowLocalModels = false;
       T.env.useBrowserCache = true;
 
-      try{
-        localTextGenerator = await T.pipeline('text2text-generation', LOCAL_TEXT_MODEL, {
-          quantized: true,
-          progress_callback: p=>{
-            const pct = progressPercent(p);
-            if(pct !== null){
-              localModelDownloadObserved = true;
-              setSmartStatus(`Downloading local language model… ${pct}%`);
-            }else if(p && p.status === 'initiate'){
-              setSmartStatus('Loading local language model files…');
-            }else if(p && p.status === 'ready'){
-              setSmartStatus('Local language model ready');
-            }
+      const attempts = [];
+      for(const modelInfo of LOCAL_MODEL_CANDIDATES){
+        for(const device of deviceCandidates()){
+          try{
+            const generator = await loadPipelineCandidate(T, modelInfo, device);
+            activeLocalModel = modelInfo;
+            activeLocalDevice = device;
+            localTextGenerator = generator;
+            setSmartStatus(localModelDownloadObserved
+              ? `${modelInfo.label} downloaded and ready (${device})`
+              : `${modelInfo.label} loaded from browser cache (${device})`);
+            return generator;
+          }catch(err){
+            attempts.push(`${modelInfo.label} on ${device}: ${errorMessage(err)}`);
+            console.warn('[WhatsUpDocMD local AI] candidate failed', modelInfo.id, device, err);
           }
-        });
-      }catch(err){
-        throw createStageError(
-          'model-load',
-          err,
-          'The local language model could not initialize from its browser cache or remote source.'
-        );
+        }
       }
 
-      setSmartStatus(localModelDownloadObserved
-        ? 'Local language model downloaded and ready'
-        : 'Local language model loaded from browser cache');
-      return localTextGenerator;
+      throw createStageError(
+        'model-load',
+        new Error(attempts.join(' | ')),
+        'No local language model could initialize on this device (all model/device combinations failed).'
+      );
     })().catch(err=>{
       resetLocalModelSession();
       throw err;
@@ -1023,31 +1066,39 @@
   }
 
   function compactSourceForModel(text, rules){
+    // Qwen2.5 / SmolLM2 have multi-thousand-token contexts, so compaction is
+    // now only a mobile inference-speed optimization, not a hard model limit.
     const raw = String(text || '').trim();
-    if(raw.length <= 1250) return raw;
+    if(raw.length <= 2600) return raw;
 
     const lines = meaningfulLines(raw);
     const signalPattern = /\b(?:must|should|need|goal|objective|deliver|create|build|update|fix|implement|include|support|preserve|avoid|do not|don't|test|verify|validate|run|attached|reference|source of truth|done when|complete when)\b/i;
-    const signalLines = uniqueLimited(lines.filter(line=>signalPattern.test(line)), 12);
-    const refs = (rules.references || []).slice(0,4);
+    const signalLines = uniqueLimited(lines.filter(line=>signalPattern.test(line)), 16);
+    const refs = (rules.references || []).slice(0,6);
     const compact = [
-      raw.slice(0, 560),
+      raw.slice(0, 1200),
       signalLines.length ? '\nKEY LINES:\n' + signalLines.join('\n') : '',
       refs.length ? '\nREFERENCES:\n' + refs.join('\n') : '',
-      '\nENDING CONTEXT:\n' + raw.slice(-260)
+      '\nENDING CONTEXT:\n' + raw.slice(-420)
     ].join('\n');
-    return compact.slice(0, 1450);
+    return compact.slice(0, 3000);
   }
 
-  function localAnalysisPrompt(source){
-    return `Analyze this request and return ONLY valid minified JSON. Use empty arrays when unsupported.
+  function localAnalysisMessages(source){
+    return [
+      { role:'system', content:'You are a precise requirements analyst. You respond with ONLY valid minified JSON. No prose, no markdown, no code fences.' },
+      { role:'user', content:`Analyze this request and return ONLY valid minified JSON. Use empty arrays when unsupported.
 Schema: {"taskType":"software|research|design|writing|data|planning|general","title":"short title","primaryGoal":"precise outcome","goals":["..."],"deliverables":["..."],"requirements":["..."],"constraints":["..."],"dependencies":["..."],"risks":["..."],"assumptions":["..."],"role":"expert role","confidence":"high|medium|low"}
 Preserve explicit intent. Do not invent features. Separate deliverables from constraints.
-REQUEST:\n${source}`;
+REQUEST:
+${source}` }
+    ];
   }
 
-  function localRepairPrompt(source){
-    return `Analyze the request. Return exactly the labeled lines below. Separate multiple items with ||. Do not add commentary.
+  function localRepairMessages(source){
+    return [
+      { role:'system', content:'You are a precise requirements analyst. You respond with ONLY the requested labeled lines. No commentary, no markdown.' },
+      { role:'user', content:`Analyze the request. Return exactly the labeled lines below. Separate multiple items with ||. Do not add commentary.
 TASK_TYPE: software|research|design|writing|data|planning|general
 TITLE: short title
 PRIMARY_GOAL: one precise outcome
@@ -1060,7 +1111,24 @@ RISKS: item || item
 ASSUMPTIONS: item || item
 ROLE: best expert role
 CONFIDENCE: high|medium|low
-REQUEST:\n${source}`;
+REQUEST:
+${source}` }
+    ];
+  }
+
+  function extractGeneratedText(result){
+    // Chat pipelines return the message list with the assistant reply appended;
+    // string prompts return plain text. Handle both, and strip any reasoning
+    // tags in case a thinking-style model is swapped in later.
+    const gen = result?.[0]?.generated_text;
+    let text = '';
+    if(typeof gen === 'string'){
+      text = gen;
+    }else if(Array.isArray(gen)){
+      const last = gen[gen.length - 1];
+      if(last && typeof last.content === 'string') text = last.content;
+    }
+    return text.replace(/<think>[\s\S]*?<\/think>/gi,'').trim();
   }
 
   function extractJsonObject(text){
@@ -1204,7 +1272,7 @@ REQUEST:\n${source}`;
       validationStrategy: validationForTask(taskType),
       confidence: modelAnalysis.confidence || rules.confidence,
       analysisEngine: 'local LLM + deterministic verification',
-      localModel: LOCAL_TEXT_MODEL,
+      localModel: activeLocalModelId(),
       responseFormat: modelAnalysis.responseFormat || 'json'
     };
   }
@@ -1232,33 +1300,33 @@ REQUEST:\n${source}`;
       const source = compactSourceForModel(raw, rules);
       setSmartStatus('Local AI is deriving goals, constraints, and success criteria…');
 
-      const result = await runLocalGeneration(generator, localAnalysisPrompt(source), {
-        max_new_tokens: 380,
+      const result = await runLocalGeneration(generator, localAnalysisMessages(source), {
+        max_new_tokens: 512,
         do_sample: false,
-        truncation: true,
-        repetition_penalty: 1.08
+        repetition_penalty: 1.05
       });
-      const generated = result?.[0]?.generated_text || '';
-      if(!generated.trim()){
-        throw createStageError('empty-response', null, 'The local language model returned an empty response.');
-      }
+      const generated = extractGeneratedText(result);
 
       let modelAnalysis;
       try{
+        if(!generated){
+          // Do not fall back yet — an empty first pass now routes into the
+          // simpler labeled repair prompt instead of abandoning local AI.
+          throw new Error('The local language model returned an empty first response.');
+        }
         modelAnalysis = normalizeModelAnalysis(extractJsonObject(generated));
         modelAnalysis.responseFormat = 'json';
       }catch(jsonError){
-        // The model is available; only its formatting failed. Give it one
-        // shorter repair pass before using the deterministic fallback.
+        // The model is available; only its output failed. Give it one
+        // simpler repair pass before using the deterministic fallback.
         setSmartStatus('Local AI is repairing its structured response…');
-        const repairResult = await runLocalGeneration(generator, localRepairPrompt(source), {
-          max_new_tokens: 300,
+        const repairResult = await runLocalGeneration(generator, localRepairMessages(source), {
+          max_new_tokens: 400,
           do_sample: false,
-          truncation: true,
           repetition_penalty: 1.05
         });
-        const repairedText = repairResult?.[0]?.generated_text || '';
-        if(!repairedText.trim()){
+        const repairedText = extractGeneratedText(repairResult);
+        if(!repairedText){
           throw createStageError('empty-response', null, 'The local language model returned an empty repair response.');
         }
         try{
@@ -1288,7 +1356,7 @@ REQUEST:\n${source}`;
         risks: [],
         assumptions: [],
         analysisEngine: 'deterministic fallback',
-        localModel: LOCAL_TEXT_MODEL,
+        localModel: activeLocalModelId(),
         modelErrorStage: stage,
         modelError: errorMessage(err),
         modelErrorDetail: err && err.detail ? err.detail : errorMessage(err)
