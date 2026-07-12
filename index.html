@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
-<!-- build r7.1-2026-07-12 -->
-<!-- Local AI engine upgrade: 2026-07-12 r7.1 — browser + WASM caching explicitly enabled, persistent-storage request added, and visible local-AI loading/download progress -->
+<!-- build r7.2-2026-07-12 -->
+<!-- Local AI engine upgrade: 2026-07-12 r7.2 — iPhone/iPad memory-safe model selection, browser caching retained, crash-loop prevention strengthened, and local-AI progress clarified -->
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -974,7 +974,7 @@
      - Only successful local-AI analyses are cached; failures retry on the
        next Convert press.
   ------------------------------------------------------------------ */
-  const APP_REV = 'r7-2026-07-12';
+  const APP_REV = 'r7.2-2026-07-12';
   /* Runtime ladder: if every model/device/dtype combination fails at session
      creation under one Transformers.js runtime, the ONNX Runtime WASM binary
      bundled with that release may simply not instantiate on this browser
@@ -999,6 +999,10 @@
      Mobile Safari's WASM heap OOMs exactly there, so WASM tries the
      smallest quantizations first. WebGPU prefers q4f16 (fp16 shaders). */
   function dtypeLadder(device){
+    // iPhone/iPad Safari has a much tighter per-tab memory ceiling than
+    // desktop browsers. Keep the known-compatible q4 variant available for
+    // the 135M mobile model, but never pair it with a larger mobile model.
+    if(isAppleTouchDevice()) return device === 'webgpu' ? ['q4f16','q4'] : ['q8','int8','q4'];
     return device === 'webgpu' ? ['q4f16','q4'] : ['q8','int8','q4'];
   }
   const VALID_TASK_TYPES = new Set(['software','research','design','writing','data','planning','general']);
@@ -1018,7 +1022,7 @@
      inference session for a ~0.5B model can spike past it, and Safari
      responds by silently reloading the page — the download hits 100%,
      session init begins, and the tab is killed. Two defenses:
-     1. On iOS/iPadOS, heavyweight models are skipped up front.
+     1. On iOS/iPadOS, only the 135M model is attempted and WebGPU is disabled.
      2. A localStorage "pending attempt" record is written before each
         session init and cleared on success, on a handled error, or on a
         deliberate page exit (pagehide). If the page boots and finds a
@@ -1112,6 +1116,7 @@
       `gpuAPI:${!!(navigator && navigator.gpu)}`,
       `gpuBroken:${webgpuRuntimeBroken}`,
       `touchApple:${isAppleTouchDevice()}`,
+      `mobileSafeMode:${isAppleTouchDevice()}`,
       `serviceWorkers:${swRegistrationCount}`,
       `cacheAPI:${typeof caches !== 'undefined'}`,
       `modelStorage:${modelStorageMode}`,
@@ -1314,8 +1319,11 @@
   }
 
   async function deviceCandidates(){
-    // WebGPU is dramatically faster where genuinely available (Chrome, Edge,
-    // Safari 26+ including iOS). WASM remains the universal fallback.
+    // On iPhone/iPad, WebGPU and its session-creation buffers can push WebKit
+    // over its per-tab memory ceiling even when navigator.gpu is advertised.
+    // Prefer the slower but substantially more predictable single-threaded
+    // WASM path there. Desktop browsers can still use WebGPU first.
+    if(isAppleTouchDevice()) return ['wasm'];
     if(webgpuRuntimeBroken) return ['wasm'];
     return (await probeWebGPU()) ? ['webgpu','wasm'] : ['wasm'];
   }
@@ -1330,12 +1338,15 @@
   }
 
   function modelCandidatesForDevice(){
-    // Heavy models routinely exceed the iOS Safari per-tab memory cap during
-    // ONNX session creation, which crashes and reloads the page. Skip them
-    // up front on Apple touch devices.
-    return isAppleTouchDevice()
-      ? LOCAL_MODEL_CANDIDATES.filter(m=>!m.heavy)
-      : LOCAL_MODEL_CANDIDATES;
+    // Important iOS safeguard: even SmolLM2-360M can exceed Safari's per-tab
+    // memory limit while ONNX creates the session. That failure is a hard tab
+    // termination ("A problem repeatedly occurred"), not a catchable JS
+    // exception. Use only the proven 135M model on Apple touch devices.
+    if(isAppleTouchDevice()){
+      const mobileSafe = LOCAL_MODEL_CANDIDATES.find(m=>m.id === 'HuggingFaceTB/SmolLM2-135M-Instruct');
+      return mobileSafe ? [mobileSafe] : [LOCAL_MODEL_CANDIDATES[LOCAL_MODEL_CANDIDATES.length - 1]];
+    }
+    return LOCAL_MODEL_CANDIDATES;
   }
 
   async function loadPipelineCandidate(T, modelInfo, device, dtype){
@@ -1437,8 +1448,16 @@
     if(localModelPromise) return localModelPromise;
 
     localModelPromise = (async()=>{
-      setSmartStatus('Checking the browser cache for the local language model…');
-      setAIProgress('Preparing local AI', 'Checking the browser cache and storage availability…');
+      const appleSafeMode = isAppleTouchDevice();
+      setSmartStatus(appleSafeMode
+        ? 'Preparing the memory-safe local AI model for iPhone/iPad…'
+        : 'Checking the browser cache for the local language model…');
+      setAIProgress(
+        'Preparing local AI',
+        appleSafeMode
+          ? 'Using the memory-safe SmolLM2 135M model with single-threaded WASM…'
+          : 'Checking the browser cache and storage availability…'
+      );
       // This is best-effort. Supporting browsers may grant persistence so
       // cached model files are less likely to be evicted under storage pressure.
       await requestPersistentModelStorage();
@@ -1730,7 +1749,7 @@ ${source}` }
       setAIProgress('Analyzing your request', `${activeLocalModel.label} is deriving goals, constraints, and success criteria…`);
 
       const result = await runLocalGeneration(generator, localAnalysisMessages(source), {
-        max_new_tokens: 512,
+        max_new_tokens: isAppleTouchDevice() ? 320 : 512,
         do_sample: false,
         repetition_penalty: 1.05
       });
@@ -1748,10 +1767,10 @@ ${source}` }
       }catch(jsonError){
         // The model is available; only its output failed. Give it one
         // simpler repair pass before using the deterministic fallback.
-        setSmartStatus('Local AI is repairing its structured response…');
-        setAIProgress('Repairing local AI response', 'The model completed inference; its structured output is being repaired locally…');
+        setSmartStatus('Local AI is finalizing the structured analysis…');
+        setAIProgress('Finalizing local AI analysis', 'The first pass completed; a smaller second pass is formatting the result…');
         const repairResult = await runLocalGeneration(generator, localRepairMessages(source), {
-          max_new_tokens: 400,
+          max_new_tokens: isAppleTouchDevice() ? 256 : 400,
           do_sample: false,
           repetition_penalty: 1.05
         });
