@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
-<!-- build r6-2026-07-12 -->
-<!-- Local AI engine upgrade: 2026-07-12 r6 — device-aware dtype ladders (wasm: q8/int8/q4 smallest-first for iOS Safari heap; webgpu: q4f16/q4), memory-lean ORT session options, ledger reset on strategy change -->
+<!-- build r7-2026-07-12 -->
+<!-- Local AI engine upgrade: 2026-07-12 r7 — runtime version ladder (v4.2.0 → v3.8.1) for ORT WASM instantiation failures, error detail auto-shown in fallback status -->
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -931,8 +931,19 @@
      - Only successful local-AI analyses are cached; failures retry on the
        next Convert press.
   ------------------------------------------------------------------ */
-  const APP_REV = 'r6-2026-07-12';
-  const TRANSFORMERS_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0';
+  const APP_REV = 'r7-2026-07-12';
+  /* Runtime ladder: if every model/device/dtype combination fails at session
+     creation under one Transformers.js runtime, the ONNX Runtime WASM binary
+     bundled with that release may simply not instantiate on this browser
+     (e.g. newer WebAssembly features on older iOS Safari). v3.8.1 is the
+     long-stabilized line most iOS demos run on, so it serves as the fallback
+     runtime. Model files are shared between runtimes via the browser cache —
+     only the runtime itself is re-fetched. */
+  const TRANSFORMERS_MODULE_URLS = [
+    { url:'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0', label:'v4.2.0' },
+    { url:'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1', label:'v3.8.1' }
+  ];
+  let activeRuntimeLabel = TRANSFORMERS_MODULE_URLS[0].label;
   const LOCAL_MODEL_CANDIDATES = [
     { id:'onnx-community/Qwen2.5-0.5B-Instruct', label:'Qwen2.5 0.5B Instruct', heavy:true  },
     { id:'HuggingFaceTB/SmolLM2-360M-Instruct',  label:'SmolLM2 360M Instruct', heavy:false },
@@ -950,7 +961,6 @@
   const VALID_TASK_TYPES = new Set(['software','research','design','writing','data','planning','general']);
   let localTextGenerator = null;
   let localModelPromise = null;
-  let transformersModulePromise = null;
   let smartAnalysisCache = {text:'', analysis:null};
   let localModelDownloadObserved = false;
   let activeLocalModel = LOCAL_MODEL_CANDIDATES[0]; // updated once a model actually loads
@@ -1061,6 +1071,7 @@
       `touchApple:${isAppleTouchDevice()}`,
       `serviceWorkers:${swRegistrationCount}`,
       `blocked:[${readBlockedCombos().join(', ') || 'none'}]`,
+      `runtime:${activeRuntimeLabel}`,
       `model:${activeLocalModelId()}`
     ];
     return parts.join(' · ');
@@ -1140,17 +1151,18 @@
     localModelPromise = null;
   }
 
-  async function getTransformersModule(){
-    if(transformersModulePromise) return transformersModulePromise;
-    transformersModulePromise = import(TRANSFORMERS_MODULE_URL).catch(err=>{
-      transformersModulePromise = null;
+  const transformersModulePromises = {};
+  async function getTransformersModule(runtime){
+    if(transformersModulePromises[runtime.url]) return transformersModulePromises[runtime.url];
+    transformersModulePromises[runtime.url] = import(runtime.url).catch(err=>{
+      delete transformersModulePromises[runtime.url];
       throw createStageError(
         'module-load',
         err,
-        'Transformers.js could not load. Connect to the internet once so the local AI runtime can be cached.'
+        `Transformers.js ${runtime.label} could not load. Connect to the internet once so the local AI runtime can be cached.`
       );
     });
-    return transformersModulePromise;
+    return transformersModulePromises[runtime.url];
   }
 
   /* WebKit webviews (in-app browsers, PWAs on some iOS builds) expose
@@ -1228,82 +1240,102 @@
     return T.pipeline('text-generation', modelInfo.id, options);
   }
 
+  async function runCandidateLadder(T, runtime, attempts){
+    const blocked = readBlockedCombos();
+    for(const modelInfo of modelCandidatesForDevice()){
+      for(const device of await deviceCandidates()){
+        if(device === 'webgpu' && webgpuRuntimeBroken) continue;
+        const comboKey = `${modelInfo.id}|${device}`;
+        if(blocked.includes(comboKey)){
+          attempts.push(`[${runtime.label}] ${modelInfo.label} on ${device}: skipped (previously crashed this device)`);
+          continue;
+        }
+        try{
+          // Record the attempt so a memory-kill reload can identify and
+          // blocklist this combination on the next boot. (dtype is not in
+          // the key: if q4 exhausts memory, the larger q8 would too.)
+          setPendingAttempt(comboKey);
+          let generator = null, lastDtypeError = null;
+          for(const dtype of dtypeLadder(device)){
+            try{
+              generator = await loadPipelineCandidate(T, modelInfo, device, dtype);
+              break;
+            }catch(dtypeErr){
+              lastDtypeError = dtypeErr;
+              if(isWebGPURuntimeFailure(dtypeErr, device)) break; // no point retrying dtypes on a broken GPU stack
+            }
+          }
+          if(!generator) throw lastDtypeError || new Error('No dtype variant could initialize.');
+          clearPendingAttempt();
+          activeLocalModel = modelInfo;
+          activeLocalDevice = device;
+          activeRuntimeLabel = runtime.label;
+          localTextGenerator = generator;
+          setSmartStatus(localModelDownloadObserved
+            ? `${modelInfo.label} downloaded and ready (${device} · ${runtime.label})`
+            : `${modelInfo.label} loaded from browser cache (${device} · ${runtime.label})`);
+          return generator;
+        }catch(err){
+          clearPendingAttempt();
+          attempts.push(`[${runtime.label}] ${modelInfo.label} on ${device}: ${errorMessage(err)}`);
+          if(isWebGPURuntimeFailure(err, device)){
+            // This browser advertises WebGPU but can't actually run it —
+            // skip webgpu for every remaining candidate this session.
+            webgpuRuntimeBroken = true;
+            console.warn('[WhatsUpDocMD local AI] WebGPU is advertised but non-functional here; using WASM for all models.', err);
+          }else{
+            console.warn('[WhatsUpDocMD local AI] candidate failed', runtime.label, modelInfo.id, device, err);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   async function getLocalTextGenerator(){
     if(localTextGenerator) return localTextGenerator;
     if(localModelPromise) return localModelPromise;
 
     localModelPromise = (async()=>{
       setSmartStatus('Checking the browser cache for the local language model…');
-      const T = await getTransformersModule();
-      T.env.allowLocalModels = false;
-      T.env.useBrowserCache = true;
-      // Keep ONNX Runtime on the main thread. In WebKit webviews, proxying
-      // session setup to a worker triggers "DataCloneError: The object can
-      // not be cloned" because GPU/runtime objects aren't structured-cloneable.
-      try{ if(T.env.backends?.onnx?.wasm) T.env.backends.onnx.wasm.proxy = false; }catch{}
-      // Multithreaded WASM needs SharedArrayBuffer, which requires COOP/COEP
-      // headers (GitHub Pages doesn't send them) and worker spawning that
-      // in-app webviews frequently block. Without this, session creation can
-      // fail right after a successful download. Force single-threaded.
-      try{
-        if(T.env.backends?.onnx?.wasm && !globalThis.crossOriginIsolated){
-          T.env.backends.onnx.wasm.numThreads = 1;
-        }
-      }catch{}
-
-      const blocked = readBlockedCombos();
       const attempts = [];
-      for(const modelInfo of modelCandidatesForDevice()){
-        for(const device of await deviceCandidates()){
-          if(device === 'webgpu' && webgpuRuntimeBroken) continue;
-          const comboKey = `${modelInfo.id}|${device}`;
-          if(blocked.includes(comboKey)){
-            attempts.push(`${modelInfo.label} on ${device}: skipped (previously crashed this device)`);
-            continue;
-          }
-          try{
-            // Record the attempt so a memory-kill reload can identify and
-            // blocklist this combination on the next boot. (dtype is not in
-            // the key: if q4 exhausts memory, the larger q8 would too.)
-            setPendingAttempt(comboKey);
-            let generator = null, lastDtypeError = null;
-            for(const dtype of dtypeLadder(device)){
-              try{
-                generator = await loadPipelineCandidate(T, modelInfo, device, dtype);
-                break;
-              }catch(dtypeErr){
-                lastDtypeError = dtypeErr;
-                if(isWebGPURuntimeFailure(dtypeErr, device)) break; // no point retrying dtypes on a broken GPU stack
-              }
-            }
-            if(!generator) throw lastDtypeError || new Error('No dtype variant could initialize.');
-            clearPendingAttempt();
-            activeLocalModel = modelInfo;
-            activeLocalDevice = device;
-            localTextGenerator = generator;
-            setSmartStatus(localModelDownloadObserved
-              ? `${modelInfo.label} downloaded and ready (${device})`
-              : `${modelInfo.label} loaded from browser cache (${device})`);
-            return generator;
-          }catch(err){
-            clearPendingAttempt();
-            attempts.push(`${modelInfo.label} on ${device}: ${errorMessage(err)}`);
-            if(isWebGPURuntimeFailure(err, device)){
-              // This browser advertises WebGPU but can't actually run it —
-              // skip webgpu for every remaining candidate this session.
-              webgpuRuntimeBroken = true;
-              console.warn('[WhatsUpDocMD local AI] WebGPU is advertised but non-functional here; using WASM for all models.', err);
-            }else{
-              console.warn('[WhatsUpDocMD local AI] candidate failed', modelInfo.id, device, err);
-            }
-          }
+
+      for(const runtime of TRANSFORMERS_MODULE_URLS){
+        let T = null;
+        try{
+          T = await getTransformersModule(runtime);
+        }catch(moduleErr){
+          attempts.push(`[${runtime.label}] runtime module: ${errorMessage(moduleErr)}`);
+          continue;
         }
+        T.env.allowLocalModels = false;
+        T.env.useBrowserCache = true;
+        // Keep ONNX Runtime on the main thread. In WebKit webviews, proxying
+        // session setup to a worker triggers "DataCloneError: The object can
+        // not be cloned" because GPU/runtime objects aren't structured-cloneable.
+        try{ if(T.env.backends?.onnx?.wasm) T.env.backends.onnx.wasm.proxy = false; }catch{}
+        // Multithreaded WASM needs SharedArrayBuffer, which requires COOP/COEP
+        // headers (GitHub Pages doesn't send them) and worker spawning that
+        // in-app webviews frequently block. Without this, session creation can
+        // fail right after a successful download. Force single-threaded.
+        try{
+          if(T.env.backends?.onnx?.wasm && !globalThis.crossOriginIsolated){
+            T.env.backends.onnx.wasm.numThreads = 1;
+          }
+        }catch{}
+
+        // Allow WebGPU another chance under a different runtime build.
+        webgpuRuntimeBroken = false;
+
+        const generator = await runCandidateLadder(T, runtime, attempts);
+        if(generator) return generator;
+        console.warn(`[WhatsUpDocMD local AI] All combinations failed under ${runtime.label}; trying next runtime if available.`);
       }
 
       throw createStageError(
         'model-load',
         new Error(attempts.join(' | ')),
-        'No local language model could initialize on this device (all model/device combinations failed or were skipped).'
+        'No local language model could initialize on this device (all runtimes, models, devices, and dtypes failed).'
       );
     })().catch(err=>{
       resetLocalModelSession();
@@ -2158,7 +2190,8 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
       `${a.constraints.length} constraint${a.constraints.length===1?'':'s'}`
     ];
     if(a.analysisEngine === 'deterministic fallback'){
-      setSmartStatus(`Rule fallback · ${localFailureLabel(a.modelErrorStage)} · tap Convert to retry`);
+      const detail = (a.modelErrorDetail || a.modelError || '').slice(0, 260);
+      setSmartStatus(`Rule fallback · ${localFailureLabel(a.modelErrorStage)} · tap Convert to retry${detail ? ` · ${detail}` : ''}`);
     }else{
       const format = a.responseFormat === 'labeled repair' ? ' · response repaired locally' : '';
       setSmartStatus(`Local AI: ${pieces.join(' · ')}${format}`);
