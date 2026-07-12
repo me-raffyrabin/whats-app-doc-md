@@ -26,6 +26,8 @@ Try it in a few steps:
 5. Tap **Convert to Agentic .md Loop** for a self-correcting Claude Code or Codex workflow
 6. Switch between **View Raw** and **Preview**, then copy, share, email, or save the result
 
+> **First local-AI conversion:** the browser downloads the language model once. Download time and storage vary by device and connection; later conversions reuse the browser cache.
+
 ---
 
 ## ✨ Features
@@ -54,31 +56,36 @@ The upload control also supports drag-and-drop. The current filename and charact
 
 ---
 
-### 🧠 Smart text processing engine
+### 🧠 Hybrid local-AI smart text processing engine
 
 Before conversion, WhatsUpDocMD analyzes the source text to infer its intended meaning rather than simply wrapping it in a fixed template.
 
-The engine identifies:
+The engine now uses two complementary layers:
+
+1. **Local language-model interpretation** — on the first conversion, the browser downloads `Xenova/flan-t5-small` through Transformers.js. The model is cached by the browser and performs semantic interpretation on the device.
+2. **Deterministic verification and fallback** — the existing rules preserve exact filenames, URLs, explicit constraints, numbered requirements, and validation wording. They also generate a complete prompt when the local model cannot load or produce valid structured output.
+
+The merged analysis identifies:
 
 - likely task type, such as software, research, design, writing, data, planning, or general work
-- primary goal
-- intended goals
-- expected deliverables
+- primary goal and intended final outcome
+- intended goals and expected deliverables
 - explicit requirements
 - constraints and “do not” rules
 - referenced files, URLs, attachments, or sources of truth
 - testing and validation signals
 - success criteria
+- dependencies
+- risks
+- assumptions
 - interpretation confidence
 - an appropriate expert role and validation strategy
 
-The analysis is deterministic and runs locally in the browser. It does not call an external LLM or send the source text to a server.
+Before conversion, the status line shows a fast rule-based pre-analysis. When **Convert** is pressed, it shows model download or semantic-analysis progress and then reports whether the result used **local AI** or the **rule fallback**.
 
-The editor displays a compact status such as:
+The source text is processed in the browser. It is not sent to a hosted language-model API. The browser only downloads the Transformers.js library and model files from the configured CDN/model host.
 
-> Understood as software task · 3 goals · 5 requirements · 2 constraints
-
-Both regular prompts and agentic loops use this structured understanding.
+Both regular prompts and agentic loops use the merged structured understanding.
 
 ---
 
@@ -268,15 +275,15 @@ No build tools, package managers, database, or application server are required.
 
 - **Single application file** — UI, styles, document extraction, smart analysis, converters, Markdown preview, and sharing logic live in `index.html`
 - **No framework** — vanilla HTML, CSS, and JavaScript
-- **Local semantic heuristics** — the smart engine uses task classification, action patterns, requirement detection, constraint detection, reference extraction, and task-specific validation rules
+- **Hybrid local semantic analysis** — Transformers.js loads `Xenova/flan-t5-small` on demand for semantic interpretation, then merges its structured result with deterministic task classification, requirement detection, constraint detection, and exact-reference extraction
 - **Raw Markdown is the source of truth** — Preview and sharing are derived from `rawMD`
 - **Stateful conversion mode** — `convMode` tracks `prompt` or `loop`
-- **Dynamic loop generation** — `buildLoop(text, model)` uses `analyzeIntent(text)` to create tailored work units, inspection instructions, validation strategies, and completion criteria
+- **Dynamic loop generation** — `buildLoop(text, model, analysis)` uses the merged local-AI analysis to create tailored work units, inspection instructions, risks, dependencies, validation strategies, and completion criteria
 - **Local file processing** — TXT, MD, RTF, and DOC are processed without upload to a server
 - **Lazy PDF support** — PDF.js 3.11.174 loads from cdnjs only when a PDF is selected
 - **Undo history** — up to 100 snapshots, including typing bursts and formatting changes
 - **Graceful browser fallbacks** — Clipboard, File, Web Share, and download capabilities provide user feedback when unavailable
-- **External resources** — Google Fonts load for typography; PDF.js loads only when needed for PDF extraction
+- **External resources** — Google Fonts load for typography; PDF.js loads only when needed for PDF extraction; Transformers.js and the local language model download only when conversion first requests local AI
 
 ---
 
@@ -291,7 +298,7 @@ WhatsUpDocMD does not include:
 - cloud document storage
 - automatic document uploads to an AI service
 
-Source text and extracted document text remain inside the browser session. As with any static web app, users should review the hosting environment and third-party resource policy before processing highly sensitive material.
+Source text and extracted document text remain inside the browser session and are not submitted to a hosted LLM API. The first local-AI conversion downloads JavaScript and model assets from third-party hosting, after which the browser cache can reuse them. As with any static web app, users should review the hosting environment, browser cache behavior, and third-party resource policy before processing highly sensitive material.
 
 ---
 
@@ -316,7 +323,8 @@ whats-app-doc-md
 - [ ] User-editable loop phases and stopping conditions
 - [ ] Prompt and loop history with local storage
 - [ ] Redo support
-- [ ] Optional local or user-provided AI model integration
+- [ ] Fully offline packaging of Transformers.js and the local language model
+- [ ] Optional model selector for faster or more capable local models
 
 ---
 

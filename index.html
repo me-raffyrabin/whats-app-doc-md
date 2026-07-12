@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>WhatsUpDocMD — Text & Documents to Agentic AI Prompts</title>
+<title>WhatsUpDocMD — Local AI Prompt & Agentic Loop Builder</title>
 <!-- iOS "run as native app" support -->
 <meta name="theme-color" content="#0b0910">
 <meta name="mobile-web-app-capable" content="yes">
@@ -211,6 +211,7 @@
   .convert:hover{transform:translateY(-1px);box-shadow:0 6px 24px -8px var(--accent-line)}
   .convert:active{transform:translateY(0)}
   .convert:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  .convert:disabled{opacity:.58;cursor:wait;transform:none;box-shadow:none}
   .share{
     display:flex;flex-wrap:wrap;justify-content:center;gap:8px;
   }
@@ -346,7 +347,7 @@
       <div class="toolbar-hint"><b>Tap</b> to format selected text · <b>Double-tap</b> to copy a sample of that format · <b>Undo</b> reverts · <b>Clear</b> empties (undoable)</div>
     </div>
     <div class="smart-status" aria-live="polite">
-      <strong>Smart context engine</strong>
+      <strong>Hybrid local AI engine</strong>
       <span id="smartSummary">Waiting for text or a document</span>
     </div>
     <textarea id="input" placeholder="Paste, type, drop, or upload TXT, RTF, DOC, MD, or PDF. WhatsUpDocMD will infer the intended goals and structure the result into a ready-to-use prompt or agentic loop." spellcheck="true"></textarea>
@@ -813,7 +814,7 @@
     return uniqueLimited([...refs,...urls],8);
   }
 
-  function analyzeIntent(text){
+  function analyzeIntentRules(text){
     const raw = String(text || '').trim();
     const lines = meaningfulLines(raw);
     const sentences = sentencesFrom(raw);
@@ -872,6 +873,219 @@
     };
   }
 
+  /* ---------------- local LLM semantic analysis ----------------
+     Uses the same local-download pattern as index-with-local-llm.html:
+     Transformers.js is imported on demand, the model is downloaded once,
+     cached by the browser, and all source text stays on the device.
+
+     The local model handles semantic interpretation. The deterministic engine
+     remains active as a verifier/fallback so exact filenames, explicit
+     constraints, and test instructions are not lost.
+  ------------------------------------------------------------------ */
+  const LOCAL_TEXT_MODEL = 'Xenova/flan-t5-small';
+  const VALID_TASK_TYPES = new Set(['software','research','design','writing','data','planning','general']);
+  let localTextGenerator = null;
+  let localModelPromise = null;
+  let smartAnalysisCache = {text:'', analysis:null};
+
+  function setSmartStatus(message){
+    $('smartSummary').textContent = message;
+  }
+
+  function progressPercent(p){
+    if(!p || p.status !== 'progress' || !p.total) return null;
+    return Math.max(0, Math.min(100, Math.round((p.loaded / p.total) * 100)));
+  }
+
+  async function getLocalTextGenerator(){
+    if(localTextGenerator) return localTextGenerator;
+    if(localModelPromise) return localModelPromise;
+
+    localModelPromise = (async()=>{
+      setSmartStatus('Downloading the local language model — one time only, then cached…');
+      const T = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+      T.env.allowLocalModels = false;
+      T.env.useBrowserCache = true;
+      localTextGenerator = await T.pipeline('text2text-generation', LOCAL_TEXT_MODEL, {
+        quantized: true,
+        progress_callback: p=>{
+          const pct = progressPercent(p);
+          if(pct !== null) setSmartStatus(`Downloading local language model… ${pct}%`);
+        }
+      });
+      return localTextGenerator;
+    })().catch(err=>{
+      localModelPromise = null;
+      throw err;
+    });
+
+    return localModelPromise;
+  }
+
+  function compactSourceForModel(text, rules){
+    const raw = String(text || '').trim();
+    if(raw.length <= 3200) return raw;
+
+    const lines = meaningfulLines(raw);
+    const signalPattern = /\b(?:must|should|need|goal|objective|deliver|create|build|update|fix|implement|include|support|preserve|avoid|do not|don't|test|verify|validate|run|attached|reference|source of truth|done when|complete when)\b/i;
+    const signalLines = uniqueLimited(lines.filter(line=>signalPattern.test(line)), 24);
+    const refs = rules.references || [];
+    const head = raw.slice(0, 1200);
+    const tail = raw.slice(-700);
+    const compact = [
+      head,
+      signalLines.length ? '\nKEY REQUIREMENT LINES:\n' + signalLines.join('\n') : '',
+      refs.length ? '\nNAMED REFERENCES:\n' + refs.join('\n') : '',
+      '\nENDING CONTEXT:\n' + tail
+    ].join('\n');
+    return compact.slice(0, 2800);
+  }
+
+  function localAnalysisPrompt(source){
+    return `Analyze the user request below. Infer the intended outcome, not merely its wording. Return ONLY one compact JSON object with no markdown or commentary.
+
+Required JSON schema:
+{"taskType":"software|research|design|writing|data|planning|general","title":"short title","primaryGoal":"one precise outcome sentence","goals":["..."],"deliverables":["..."],"requirements":["..."],"constraints":["..."],"references":["..."],"validation":["..."],"successCriteria":["..."],"dependencies":["..."],"risks":["..."],"assumptions":["..."],"role":"best expert role","confidence":"high|medium|low"}
+
+Rules:
+- Preserve exact filenames, URLs, quoted labels, and explicit prohibitions.
+- Separate what must be built from what must not change.
+- Convert vague wording into a concrete outcome without inventing unsupported features.
+- Include only facts reasonably supported by the request.
+- Keep each array concise, deduplicated, and action-oriented.
+
+USER REQUEST:
+${source}`;
+  }
+
+  function extractJsonObject(text){
+    const cleaned = String(text || '').replace(/```(?:json)?/gi,'').replace(/```/g,'').trim();
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if(start < 0 || end <= start) throw new Error('Local model did not return structured JSON.');
+    const candidate = cleaned.slice(start, end + 1);
+    try{ return JSON.parse(candidate); }
+    catch{
+      // Small instruction models occasionally emit smart quotes or trailing commas.
+      const repaired = candidate
+        .replace(/[“”]/g,'"')
+        .replace(/[‘’]/g,"'")
+        .replace(/,\s*([}\]])/g,'$1')
+        .replace(/([{,]\s*)'([^']+)'\s*:/g,'$1"$2":')
+        .replace(/:\s*'([^']*)'(?=\s*[,}])/g,(_,v)=>`: ${JSON.stringify(v)}`);
+      return JSON.parse(repaired);
+    }
+  }
+
+  function normalizeString(value, fallback=''){
+    if(typeof value !== 'string') return fallback;
+    return cleanTextLine(value).slice(0, 600);
+  }
+
+  function normalizeArray(value, limit=10){
+    if(!Array.isArray(value)) return [];
+    return uniqueLimited(value.map(v=>normalizeString(v)).filter(Boolean), limit);
+  }
+
+  function normalizeModelAnalysis(value){
+    const taskType = VALID_TASK_TYPES.has(String(value?.taskType || '').toLowerCase())
+      ? String(value.taskType).toLowerCase() : 'general';
+    const confidence = ['high','medium','low'].includes(String(value?.confidence || '').toLowerCase())
+      ? String(value.confidence).toLowerCase() : 'medium';
+    return {
+      taskType,
+      title: normalizeString(value?.title),
+      primaryGoal: normalizeString(value?.primaryGoal),
+      goals: normalizeArray(value?.goals, 8),
+      deliverables: normalizeArray(value?.deliverables, 10),
+      requirements: normalizeArray(value?.requirements, 12),
+      constraints: normalizeArray(value?.constraints, 10),
+      references: normalizeArray(value?.references, 10),
+      validation: normalizeArray(value?.validation, 10),
+      successCriteria: normalizeArray(value?.successCriteria, 10),
+      dependencies: normalizeArray(value?.dependencies, 8),
+      risks: normalizeArray(value?.risks, 8),
+      assumptions: normalizeArray(value?.assumptions, 8),
+      role: normalizeString(value?.role),
+      confidence
+    };
+  }
+
+  function combineLists(primary, verifier, limit){
+    return uniqueLimited([...(primary || []), ...(verifier || [])], limit);
+  }
+
+  function mergeAnalyses(modelAnalysis, rules){
+    const taskType = modelAnalysis.taskType !== 'general' ? modelAnalysis.taskType : rules.taskType;
+    const primaryGoal = modelAnalysis.primaryGoal || rules.primaryGoal;
+    const titleSource = modelAnalysis.title || primaryGoal || rules.title;
+    const title = titleSource.length > 72 ? titleSource.slice(0,69) + '…' : titleSource;
+    const goals = combineLists(modelAnalysis.goals, rules.goals, 8);
+    const deliverables = combineLists(modelAnalysis.deliverables, rules.deliverables, 10);
+    // Exact rule-derived constraints and references are placed first as a safeguard.
+    const constraints = combineLists(rules.constraints, modelAnalysis.constraints, 10);
+    const references = combineLists(rules.references, modelAnalysis.references, 10);
+    const requirements = combineLists(modelAnalysis.requirements, rules.requirements, 12);
+    const validation = combineLists(modelAnalysis.validation, rules.validation, 10);
+    const successCriteria = combineLists(modelAnalysis.successCriteria, rules.successCriteria, 10);
+    return {
+      ...rules,
+      title: title || rules.title,
+      taskType,
+      role: modelAnalysis.role || roleForTask(taskType),
+      primaryGoal,
+      goals: goals.length ? goals : [primaryGoal],
+      deliverables: deliverables.length ? deliverables : [primaryGoal],
+      requirements,
+      constraints,
+      references,
+      validation,
+      successCriteria,
+      dependencies: modelAnalysis.dependencies,
+      risks: modelAnalysis.risks,
+      assumptions: modelAnalysis.assumptions,
+      validationStrategy: validationForTask(taskType),
+      confidence: modelAnalysis.confidence || rules.confidence,
+      analysisEngine: 'local LLM + deterministic verification',
+      localModel: LOCAL_TEXT_MODEL
+    };
+  }
+
+  async function analyzeIntentSmart(text){
+    const raw = String(text || '').trim();
+    if(smartAnalysisCache.text === raw && smartAnalysisCache.analysis) return smartAnalysisCache.analysis;
+
+    const rules = analyzeIntentRules(raw);
+    try{
+      const generator = await getLocalTextGenerator();
+      setSmartStatus('Local AI is deriving goals, constraints, and success criteria…');
+      const source = compactSourceForModel(raw, rules);
+      const result = await generator(localAnalysisPrompt(source), {
+        max_new_tokens: 520,
+        do_sample: false,
+        truncation: true,
+        repetition_penalty: 1.08
+      });
+      const generated = result?.[0]?.generated_text || '';
+      const modelAnalysis = normalizeModelAnalysis(extractJsonObject(generated));
+      const merged = mergeAnalyses(modelAnalysis, rules);
+      smartAnalysisCache = {text:raw, analysis:merged};
+      return merged;
+    }catch(err){
+      const fallback = {
+        ...rules,
+        dependencies: [],
+        risks: [],
+        assumptions: [],
+        analysisEngine: 'deterministic fallback',
+        localModel: LOCAL_TEXT_MODEL,
+        modelError: err && err.message ? err.message : String(err)
+      };
+      smartAnalysisCache = {text:raw, analysis:fallback};
+      return fallback;
+    }
+  }
+
   function mdList(items, fallback='Not explicitly stated; infer conservatively from the source request.'){
     if(!items || !items.length) return `- ${fallback}`;
     return items.map(item=>`- ${item}`).join('\n');
@@ -888,24 +1102,24 @@
       $('smartSummary').textContent = 'Waiting for text or a document';
       return;
     }
-    const a = analyzeIntent(text);
+    const a = analyzeIntentRules(text);
     const pieces = [
       `${a.taskType} task`,
       `${a.goals.length} goal${a.goals.length===1?'':'s'}`,
       `${a.requirements.length} requirement${a.requirements.length===1?'':'s'}`,
       `${a.constraints.length} constraint${a.constraints.length===1?'':'s'}`
     ];
-    $('smartSummary').textContent = `Understood as ${pieces.join(' · ')}`;
+    $('smartSummary').textContent = `Pre-analysis: ${pieces.join(' · ')} · local AI runs on Convert`;
   }
 
   /* ---------------- conversion ---------------- */
   function firstLine(t){
-    const analysis = analyzeIntent(t);
+    const analysis = analyzeIntentRules(t);
     return analysis.title || 'Untitled request';
   }
 
-  function buildClaude(text){
-    const a = analyzeIntent(text);
+  function buildClaude(text, analysis){
+    const a = analysis || analyzeIntentRules(text);
     return `# Prompt — ${a.title}
 
 ## Role
@@ -914,6 +1128,7 @@ You are Claude acting as an ${a.role}. Be precise, honest, and thorough. Use the
 <smart_context>
   <task_type>${a.taskType}</task_type>
   <confidence>${a.confidence}</confidence>
+  <analysis_engine>${a.analysisEngine || 'deterministic local analysis'}</analysis_engine>
   <primary_goal>${a.primaryGoal.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</primary_goal>
   <goals>
 ${xmlItems(a.goals)}
@@ -933,6 +1148,15 @@ ${xmlItems(a.references)}
   <validation_signals>
 ${xmlItems(a.validation)}
   </validation_signals>
+  <dependencies>
+${xmlItems(a.dependencies)}
+  </dependencies>
+  <risks>
+${xmlItems(a.risks)}
+  </risks>
+  <assumptions>
+${xmlItems(a.assumptions)}
+  </assumptions>
 </smart_context>
 
 <context>
@@ -955,8 +1179,8 @@ ${text.trim()}
 </output_format>`;
   }
 
-  function buildGPT(text){
-    const a = analyzeIntent(text);
+  function buildGPT(text, analysis){
+    const a = analysis || analyzeIntentRules(text);
     return `# Prompt — ${a.title}
 
 ## System
@@ -966,6 +1190,7 @@ You are an ${a.role}. Be precise, honest, and thorough. Use the interpreted inte
 
 **Task type:** ${a.taskType}  
 **Interpretation confidence:** ${a.confidence}  
+**Analysis engine:** ${a.analysisEngine || 'deterministic local analysis'}  
 **Primary goal:** ${a.primaryGoal}
 
 ### Goals
@@ -985,6 +1210,15 @@ ${mdList(a.references)}
 
 ### Validation Signals
 ${mdList(a.validation)}
+
+### Dependencies
+${mdList(a.dependencies)}
+
+### Risks
+${mdList(a.risks)}
+
+### Assumptions
+${mdList(a.assumptions)}
 
 ## User Request
 ${text.trim()}
@@ -1082,8 +1316,8 @@ ${text.trim()}
   }
 
   /* ---------------- agentic loop conversion ---------------- */
-  function buildLoop(text, m){
-    const a = analyzeIntent(text);
+  function buildLoop(text, m, analysis){
+    const a = analysis || analyzeIntentRules(text);
     const agentName = m==='claude' ? 'Claude Code' : 'Codex';
     const task = m==='claude'
       ? `<source_request>\n${text.trim()}\n</source_request>`
@@ -1114,6 +1348,7 @@ Do not stop after the first attempt. Do not treat a successful edit as proof of 
 
 **Task type:** ${a.taskType}  
 **Interpretation confidence:** ${a.confidence}  
+**Analysis engine:** ${a.analysisEngine || 'deterministic local analysis'}  
 **Primary goal:** ${a.primaryGoal}
 
 ### Intended Goals
@@ -1133,6 +1368,15 @@ ${mdList(a.references)}
 
 ### Validation Signals Found in the Request
 ${mdList(a.validation)}
+
+### Dependencies
+${mdList(a.dependencies)}
+
+### Risks
+${mdList(a.risks)}
+
+### Assumptions
+${mdList(a.assumptions)}
 
 ${task}
 
@@ -1335,16 +1579,51 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
   let viewMode = 'raw';     // 'raw' | 'preview'
   let convMode = 'prompt';  // 'prompt' | 'loop' — last conversion type
 
-  function convert(mode){
+  let converting = false;
+  function setConversionBusy(busy){
+    converting = busy;
+    $('convert').disabled = busy;
+    $('convertLoop').disabled = busy;
+  }
+
+  function showAnalysisSummary(a){
+    const engine = a.analysisEngine === 'deterministic fallback' ? 'rule fallback' : 'local AI';
+    const pieces = [
+      `${a.taskType} task`,
+      `${a.goals.length} goal${a.goals.length===1?'':'s'}`,
+      `${a.requirements.length} requirement${a.requirements.length===1?'':'s'}`,
+      `${a.constraints.length} constraint${a.constraints.length===1?'':'s'}`
+    ];
+    setSmartStatus(`${engine}: ${pieces.join(' · ')}`);
+  }
+
+  async function convert(mode){
     if(mode) convMode = mode;
+    if(converting) return;
     const text = input.value;
     if(!text.trim()){ say('Add some text first'); input.focus(); return; }
-    rawMD = convMode==='loop'
-      ? buildLoop(text, model)
-      : (model==='claude' ? buildClaude(text) : buildGPT(text));
-    updateOutLabel();
-    renderOutput();
-    $('outCount').textContent = rawMD.length + ' chars';
+
+    setConversionBusy(true);
+    try{
+      const analysis = await analyzeIntentSmart(text);
+      rawMD = convMode==='loop'
+        ? buildLoop(text, model, analysis)
+        : (model==='claude' ? buildClaude(text, analysis) : buildGPT(text, analysis));
+      updateOutLabel();
+      renderOutput();
+      $('outCount').textContent = rawMD.length + ' chars';
+      showAnalysisSummary(analysis);
+      if(analysis.analysisEngine === 'deterministic fallback'){
+        say('Local AI was unavailable — generated with the private rule-based fallback');
+      }else{
+        say(convMode === 'loop' ? 'Agentic Loop generated with local AI' : 'Prompt generated with local AI');
+      }
+    }catch(err){
+      setSmartStatus('Could not process this request');
+      say(err && err.message ? err.message : 'Conversion failed');
+    }finally{
+      setConversionBusy(false);
+    }
   }
   function updateOutLabel(){
     const kind = convMode==='loop' ? 'loop' : 'prompt';
@@ -1489,6 +1768,7 @@ Do not claim exact parity, passing tests, successful builds, or completed work u
 
   let smartSummaryTimer;
   function updateCount(){
+    smartAnalysisCache = {text:'', analysis:null};
     $('charCount').textContent = input.value.length + ' chars';
     clearTimeout(smartSummaryTimer);
     smartSummaryTimer = setTimeout(updateSmartSummary, 140);
