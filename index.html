@@ -192,7 +192,37 @@
   .toolbar button.act{color:var(--muted)}
   .toolbar button.act:hover{background:var(--accent-soft);color:var(--accent)}
   .toolbar button#tbClear:hover{background:rgba(217,96,58,.14);color:#d9603a}
-  /* ---------- convert + share ---------- */
+  /* ---------- toolbar conversion controls ---------- */
+  .toolbar-convert{
+    display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:auto;
+  }
+  .toolbar button.convert-tool{
+    appearance:none;width:auto;height:34px;padding:0 12px;border:1px solid var(--accent-line);
+    border-radius:9px;background:var(--accent-soft);color:var(--accent);
+    display:flex;align-items:center;justify-content:center;gap:7px;
+    font:600 11.5px/1.2 'Inter',sans-serif;letter-spacing:.01em;white-space:nowrap;
+    transition:transform .15s,box-shadow .2s,background .15s,color .15s;
+  }
+  .toolbar button.convert-tool svg{width:16px;height:16px;flex:none}
+  .toolbar button.convert-tool:hover{
+    transform:translateY(-1px);background:var(--accent-soft);color:var(--accent);
+    box-shadow:0 6px 20px -10px var(--accent-line);
+  }
+  .toolbar button.convert-tool:active{transform:translateY(0)}
+  .toolbar button.convert-tool:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .toolbar button.convert-tool:disabled{opacity:.58;cursor:wait;transform:none;box-shadow:none}
+  @media (max-width:600px){
+    .toolbar-convert{width:100%;display:grid;grid-template-columns:1fr 1fr;margin:4px 0 0;gap:7px}
+    .toolbar button.convert-tool{
+      width:100%;height:auto;min-height:38px;padding:7px 8px;font-size:10.5px;white-space:normal;text-align:center;
+    }
+    .toolbar button.convert-tool svg{width:15px;height:15px}
+  }
+  @media (max-width:380px){
+    .toolbar-convert{grid-template-columns:1fr}
+  }
+
+  /* ---------- share actions ---------- */
   .actions{
     width:100%;max-width:1200px;margin:0 auto;
     padding:6px 20px calc(18px + env(safe-area-inset-bottom, 0px));
@@ -200,18 +230,6 @@
     padding-right:calc(20px + env(safe-area-inset-right, 0px));
     display:flex;flex-direction:column;gap:12px;
   }
-  .convertRow{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
-  .convert{
-    appearance:none;border:1px solid var(--accent-line);border-radius:999px;
-    background:var(--accent-soft);color:var(--accent);
-    font:600 14px 'Inter',sans-serif;letter-spacing:.02em;
-    padding:12px 34px;cursor:pointer;transition:transform .15s,box-shadow .2s;
-    max-width:100%;
-  }
-  .convert:hover{transform:translateY(-1px);box-shadow:0 6px 24px -8px var(--accent-line)}
-  .convert:active{transform:translateY(0)}
-  .convert:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-  .convert:disabled{opacity:.58;cursor:wait;transform:none;box-shadow:none}
   .share{
     display:flex;flex-wrap:wrap;justify-content:center;gap:8px;
   }
@@ -226,8 +244,6 @@
       padding-left:calc(12px + env(safe-area-inset-left, 0px));
       padding-right:calc(12px + env(safe-area-inset-right, 0px));
       padding-bottom:calc(14px + env(safe-area-inset-bottom, 0px));}
-    .convertRow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-    .convert{padding:13px 6px;font-size:13px;white-space:nowrap}
     /* 3-column grid: all six share buttons always fit the viewport */
     .share{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
     .share button{padding:10px 4px;font-size:11.5px}
@@ -322,7 +338,7 @@
         <span id="charCount">0 chars</span>
       </div>
     </div>
-    <div class="toolbar" id="toolbar" aria-label="Markdown toolbar">
+    <div class="toolbar" id="toolbar" aria-label="Markdown and AI conversion toolbar">
       <button data-md="h1" title="Heading 1" aria-label="Heading 1"><svg viewBox="0 0 24 24"><path d="M4 5v14M12 5v14M4 12h8"/><path d="M17 12l2.5-2v9"/></svg></button>
       <button data-md="h2" title="Heading 2" aria-label="Heading 2"><svg viewBox="0 0 24 24"><path d="M3 5v14M10 5v14M3 12h7"/><path d="M15 10c0-1.2 1-2 2.2-2s2.3.8 2.3 2c0 2.2-4.5 3.5-4.5 6h5"/></svg></button>
       <button data-md="bold" title="Bold" aria-label="Bold"><svg viewBox="0 0 24 24"><path d="M7 5h6a3.5 3.5 0 0 1 0 7H7zM7 12h7a3.5 3.5 0 0 1 0 7H7z"/></svg></button>
@@ -344,7 +360,18 @@
       <span class="sep"></span>
       <button id="tbUndo" class="act" title="Undo" aria-label="Undo recent change"><svg viewBox="0 0 24 24"><path d="M8 6L4 10l4 4"/><path d="M4 10h10a6 6 0 0 1 0 12h-3"/></svg></button>
       <button id="tbClear" class="act" title="Clear all" aria-label="Clear all text"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6M14 11v6"/></svg></button>
-      <div class="toolbar-hint"><b>Tap</b> to format selected text · <b>Double-tap</b> to copy a sample of that format · <b>Undo</b> reverts · <b>Clear</b> empties (undoable)</div>
+      <span class="sep"></span>
+      <div class="toolbar-convert" role="group" aria-label="AI conversion options">
+        <button class="convert-tool" id="convert" type="button" title="Convert to .md prompt" aria-label="Convert to Markdown prompt">
+          <svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4"/><path d="M9 12h6M9 16h6"/><path d="M4 8l-1 1 1 1M20 13l1 1-1 1"/></svg>
+          <span>Convert to .md prompt</span>
+        </button>
+        <button class="convert-tool" id="convertLoop" type="button" title="Convert to Agentic .md Loop" aria-label="Convert to Agentic Markdown Loop">
+          <svg viewBox="0 0 24 24"><path d="M7 7h8a4 4 0 0 1 4 4v1"/><path d="M16 4l3 3-3 3"/><path d="M17 17H9a4 4 0 0 1-4-4v-1"/><path d="M8 20l-3-3 3-3"/></svg>
+          <span>Convert to Agentic .md Loop</span>
+        </button>
+      </div>
+      <div class="toolbar-hint"><b>Tap</b> to format selected text · <b>Double-tap</b> to copy a sample · Use the highlighted controls to generate a prompt or agentic loop</div>
     </div>
     <div class="smart-status" aria-live="polite">
       <strong>Hybrid local AI engine</strong>
@@ -368,10 +395,6 @@
 </main>
 
 <div class="actions">
-  <div class="convertRow">
-    <button class="convert" id="convert">Convert to .md prompt</button>
-    <button class="convert" id="convertLoop">Convert to Agentic .md Loop</button>
-  </div>
   <div class="share" aria-label="Share options">
     <button id="shCopy"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy</button>
     <button id="shEmail"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>Email</button>
